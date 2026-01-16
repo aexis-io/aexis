@@ -5,13 +5,12 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import json
 
-from google import genai
-from google.genai import types
-
 from .model import SystemSnapshot, Event
 from .message_bus import MessageBus
 from .pod import Pod
 from .station import Station, PassengerGenerator, CargoGenerator
+from .ai_provider import AIProviderFactory
+from .errors import create_error, ErrorCode
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +24,7 @@ class AexisSystem:
             redis_url=os.getenv('REDIS_URL', 'redis://localhost:6379'),
             password=os.getenv('REDIS_PASSWORD')
         )
-        self.gemini_client = None
+        self.ai_provider = None
         self.pods = {}
         self.stations = {}
         self.passenger_generator = None
@@ -44,7 +43,6 @@ class AexisSystem:
             'average_wait_time': 0.0,
             'system_efficiency': 0.0,
             'throughput_per_hour': 0,
-            'api_calls_today': 0,
             'fallback_usage_rate': 0.0
         }
         
@@ -54,20 +52,15 @@ class AexisSystem:
         self.snapshot_interval = int(os.getenv('SNAPSHOT_INTERVAL', '300'))  # 5 minutes
         
     async def initialize(self) -> bool:
-        """Initialize the system"""
+        """Initialize system"""
         try:
             # Connect to Redis
             if not await self.message_bus.connect():
                 logger.error("Failed to connect to Redis message bus")
                 return False
             
-            # Initialize Gemini client
-            api_key = os.getenv('GEMINI_API_KEY')
-            if not api_key:
-                logger.warning("No Gemini API key provided - using fallback only")
-            else:
-                self.gemini_client = genai.Client(api_key=api_key)
-                logger.info("Gemini client initialized")
+            # Initialize AI provider
+            await self._initialize_ai_provider()
             
             # Create stations
             await self._create_stations()
@@ -85,8 +78,36 @@ class AexisSystem:
             return True
             
         except Exception as e:
-            logger.error(f"System initialization failed: {e}")
+            error_details = handle_exception(e, "AexisSystem")
+            logger.error(f"System initialization failed: {error_details.message}")
             return False
+    
+    async def _initialize_ai_provider(self):
+        """Initialize AI provider based on configuration"""
+        try:
+            ai_type = os.getenv('AI_PROVIDER', 'mock').lower()
+            
+            if ai_type == 'gemini':
+                api_key = os.getenv('GEMINI_API_KEY')
+                if not api_key:
+                    logger.warning("Gemini API key not provided, using mock provider")
+                    ai_type = 'mock'
+                else:
+                    from google import genai
+                    client = genai.Client(api_key=api_key)
+                    self.ai_provider = AIProviderFactory.create_provider('gemini', client=client)
+                    logger.info("Gemini AI provider initialized")
+                    return
+            
+            # Default to mock provider
+            self.ai_provider = AIProviderFactory.create_provider(ai_type)
+            logger.info(f"{ai_type.title()} AI provider initialized")
+            
+        except Exception as e:
+            logger.debug(f"AI provider initialization failed: {e}", exc_info=True)
+            # Fallback to mock provider
+            self.ai_provider = AIProviderFactory.create_provider('mock')
+            logger.info("Fallback to mock AI provider")
     
     async def start(self):
         """Start the system"""
@@ -183,7 +204,8 @@ class AexisSystem:
         for i in range(1, self.pod_count + 1):
             pod_id = f"pod_{i:03d}"
             
-            pod = Pod(self.message_bus, pod_id, self.gemini_client)
+            # Create pod with AI provider
+            pod = Pod(self.message_bus, pod_id, self.ai_provider)
             
             # Assign initial station (distribute pods across stations)
             station_index = (i - 1) % len(self.stations)
@@ -288,8 +310,7 @@ class AexisSystem:
         else:
             throughput_per_hour = 0
         
-        # Calculate API usage and fallback rate
-        total_api_calls = sum(pod.decision_engine.daily_api_calls for pod in self.pods.values())
+        # Calculate fallback rate
         total_decisions = sum(len(pod.decision_engine.decision_history) for pod in self.pods.values())
         fallback_usage_rate = 0.0
         if total_decisions > 0:
@@ -310,7 +331,6 @@ class AexisSystem:
             'average_wait_time': avg_wait_time,
             'system_efficiency': system_efficiency,
             'throughput_per_hour': throughput_per_hour,
-            'api_calls_today': total_api_calls,
             'fallback_usage_rate': fallback_usage_rate
         })
     
@@ -332,7 +352,6 @@ class AexisSystem:
             f"Stations: {self.metrics['operational_stations']}/{self.metrics['total_stations']}, "
             f"Queue: {self.metrics['pending_passengers']}P/{self.metrics['pending_cargo']}C, "
             f"Efficiency: {self.metrics['system_efficiency']:.1%}, "
-            f"API Calls: {self.metrics['api_calls_today']}, "
             f"Fallback Rate: {self.metrics['fallback_usage_rate']:.1%}"
         )
     

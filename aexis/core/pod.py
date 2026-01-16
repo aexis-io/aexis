@@ -1,12 +1,8 @@
 import asyncio
-import json
 import time
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
-import os
-from google import genai
-from google.genai import types
 
 from .model import (
     Event, PodStatusUpdate, PodDecision, DecisionContext, Decision,
@@ -14,6 +10,7 @@ from .model import (
 )
 from .message_bus import MessageBus, EventProcessor
 from .routing import OfflineRouter
+from .ai_provider import AIProvider, AIProviderFactory, MockAIProvider
 
 
 logger = logging.getLogger(__name__)
@@ -22,20 +19,14 @@ logger = logging.getLogger(__name__)
 class PodDecisionEngine:
     """Hybrid decision engine with AI and fallback routing"""
     
-    def __init__(self, pod_id: str, gemini_client: genai.Client):
+    def __init__(self, pod_id: str, ai_provider: Optional[AIProvider] = None):
         self.pod_id = pod_id
-        self.gemini_client = gemini_client
+        self.ai_provider = ai_provider or MockAIProvider()  # Default to mock
         self.offline_router = OfflineRouter()
         self.ai_enabled = True
         self.last_ai_failure = None
         self.ai_failure_count = 0
-        self.thought_signature = None
         self.decision_history = []
-        
-        # Cost management
-        self.daily_api_calls = 0
-        self.daily_limit = int(os.getenv('POD_DAILY_API_LIMIT', '100'))
-        self.last_reset_date = datetime.utcnow().date()
         
     async def make_decision(self, context: DecisionContext) -> Decision:
         """Make routing decision with AI or fallback"""
@@ -58,14 +49,9 @@ class PodDecisionEngine:
     def _should_use_ai(self) -> bool:
         """Determine if AI should be used based on conditions"""
         
-        # Check daily limit
-        today = datetime.utcnow().date()
-        if today != self.last_reset_date:
-            self.daily_api_calls = 0
-            self.last_reset_date = today
-        
-        if self.daily_api_calls >= self.daily_limit:
-            logger.info(f"Pod {self.pod_id} reached daily API limit, using fallback")
+        # Check if AI provider is available
+        if not self.ai_provider or not self.ai_provider.is_available():
+            logger.debug(f"AI provider {self.ai_provider.get_provider_name() if self.ai_provider else 'None'} not available for pod {self.pod_id}")
             return False
         
         # Check if AI is enabled
@@ -84,31 +70,15 @@ class PodDecisionEngine:
         return complexity > 0.3  # Use AI for moderately complex scenarios
     
     async def _ai_decision(self, context: DecisionContext) -> Decision:
-        """Make decision using Gemini 3 AI"""
+        """Make decision using AI provider"""
+        if not self.ai_provider:
+            raise create_error(
+                ErrorCode.GEMINI_API_KEY_MISSING,
+                component="PodDecisionEngine",
+                context={"pod_id": self.pod_id}
+            )
         
-        prompt = self._build_ai_prompt(context)
-        
-        # Configure generation with thought signature
-        config = types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=1000,
-            # Use thought signature for continuity
-            system_instruction=self._get_system_instruction()
-        )
-        
-        response = await self.gemini_client.aio.models.generate_content(
-            model="gemini-3-pro-preview",
-            contents=prompt,
-            config=config
-        )
-        
-        self.daily_api_calls += 1
-        self.thought_signature = response.candidates[0].content if response.candidates else None
-        
-        decision = self._parse_ai_response(response)
-        decision.fallback_used = False
-        
-        return decision
+        return await self.ai_provider.make_decision(context)
     
     def _build_ai_prompt(self, context: DecisionContext) -> str:
         """Build comprehensive AI prompt"""
@@ -321,7 +291,7 @@ Key Principles:
 class Pod(EventProcessor):
     """Autonomous pod with hybrid decision-making"""
     
-    def __init__(self, message_bus: MessageBus, pod_id: str, gemini_client: genai.Client):
+    def __init__(self, message_bus: MessageBus, pod_id: str, ai_provider: Optional[AIProvider] = None):
         super().__init__(message_bus, pod_id)
         self.pod_id = pod_id
         self.status = PodStatus.IDLE
@@ -335,8 +305,8 @@ class Pod(EventProcessor):
         self.passengers = []  # Currently loaded passengers
         self.cargo = []  # Currently loaded cargo
         
-        # Decision engine
-        self.decision_engine = PodDecisionEngine(pod_id, gemini_client)
+        # Decision engine with AI provider
+        self.decision_engine = PodDecisionEngine(pod_id, ai_provider)
         
         # Movement tracking
         self.movement_start_time = None
