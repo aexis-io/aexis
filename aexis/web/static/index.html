@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AEXIS Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-theme min-h-screen">
+    <!-- Status Overlay -->
+    <div id="offline-overlay" class="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center hidden">
+        <div class="text-center">
+            <h2 class="text-3xl font-bold text-red-500 mb-2">System Offline</h2>
+            <p class="text-gray-400">Attempting to reconnect...</p>
+        </div>
+    </div>
+
+    <div class="container mx-auto p-4">
+        <header class="mb-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-bold">AEXIS Control Center</h1>
+                <p class="text-gray-400">Autonomous Event-Driven Transportation Intelligence System</p>
+            </div>
+            <div id="connection-status" class="px-3 py-1 rounded bg-gray-800 text-sm">
+                Connecting...
+            </div>
+        </header>
+        
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- System Overview -->
+            <section class="lg:col-span-2">
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4">System Overview</h2>
+                    
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="text-center p-4 bg-gray-900 rounded">
+                            <div class="text-2xl font-bold status-online" id="active-pods">0</div>
+                            <div class="text-sm text-gray-400">Active Pods</div>
+                        </div>
+                        <div class="text-center p-4 bg-gray-900 rounded">
+                            <div class="text-2xl font-bold status-online" id="operational-stations">0</div>
+                            <div class="text-sm text-gray-400">Stations</div>
+                        </div>
+                        <div class="text-center p-4 bg-gray-900 rounded">
+                            <div class="text-2xl font-bold" id="pending-passengers">0</div>
+                            <div class="text-sm text-gray-400">Waiting</div>
+                        </div>
+                        <div class="text-center p-4 bg-gray-900 rounded">
+                            <div class="text-2xl font-bold" id="system-efficiency">0%</div>
+                            <div class="text-sm text-gray-400">Efficiency</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Performance Chart -->
+                    <div class="bg-gray-900 rounded p-4 h-64">
+                        <canvas id="performance-chart"></canvas>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Network Visualization -->
+            <section class="lg:col-span-1">
+                <div class="bg-gray-800 rounded-lg p-6 h-full">
+                    <h2 class="text-xl font-semibold mb-4">Network Status</h2>
+                    <div class="bg-gray-900 rounded p-4 h-64 lg:h-auto lg:flex-grow">
+                        <!-- Placeholder for network graph -->
+                        <div class="flex items-center justify-center h-full text-gray-500">
+                            Network Graph Visualization
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Event Stream -->
+            <section class="lg:col-span-3">
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4">Live Event Stream</h2>
+                    <div class="bg-gray-900 rounded p-4 h-64 overflow-y-auto font-mono text-sm" id="event-stream">
+                        <!-- Events will be added here -->
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
