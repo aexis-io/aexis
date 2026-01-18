@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,83 +9,142 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="dark-theme min-h-screen">
-    <!-- Status Overlay -->
-    <div id="offline-overlay" class="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center hidden">
-        <div class="text-center">
-            <h2 class="text-3xl font-bold text-red-500 mb-2">System Offline</h2>
-            <p class="text-gray-400">Attempting to reconnect...</p>
+
+<body class="bg-gray-900 text-gray-100 overflow-hidden m-0 p-0 w-screen h-screen">
+    <!-- Main 2D Viewport -->
+    <canvas id="network-canvas" class="absolute inset-0 z-0 bg-gray-900"></canvas>
+
+    <!-- HUD Overlay -->
+    <div class="absolute inset-0 z-50 pointer-events-none p-6 flex flex-col justify-between">
+
+        <!-- Top Bar: Header & Stats -->
+        <header class="flex justify-between items-start pointer-events-auto">
+            <div>
+                <h1 class="text-4xl font-bold tracking-tighter text-blue-500 drop-shadow-lg"
+                    style="font-family: 'Courier New', monospace;">AEXIS_VIEWPORT</h1>
+                <div class="flex items-center space-x-2 mt-1">
+                    <div id="connection-status" class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
+                    <span class="text-xs text-blue-300 font-mono tracking-widest uppercase">System Link: <span
+                            id="status-text">OFFLINE</span></span>
+                </div>
+            </div>
+
+            <!-- Live Metrics HUD -->
+            <div
+                class="grid grid-cols-4 gap-4 bg-gray-800 bg-opacity-80 backdrop-blur-md p-4 rounded-xl border border-gray-700 shadow-2xl">
+                <div class="text-center">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider">Pods Active</div>
+                    <div class="text-2xl font-bold text-emerald-400 font-mono" id="active-pods">00</div>
+                </div>
+                <div class="text-center border-l border-gray-700 pl-4">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider">Efficiency</div>
+                    <div class="text-2xl font-bold text-blue-400 font-mono" id="system-efficiency">0%</div>
+                </div>
+                <div class="text-center border-l border-gray-700 pl-4">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider">Queue</div>
+                    <div class="text-2xl font-bold text-amber-400 font-mono" id="pending-passengers">0</div>
+                </div>
+                <div class="text-center border-l border-gray-700 pl-4">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider">Stations</div>
+                    <div class="text-2xl font-bold text-purple-400 font-mono" id="operational-stations">0</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Bottom Section: Controls & Event Log -->
+        <div class="flex justify-between items-end gap-6 pointer-events-auto">
+
+            <!-- Controls Panel -->
+            <div
+                class="bg-gray-800 bg-opacity-90 backdrop-blur-md p-5 rounded-xl border border-gray-700 shadow-2xl w-80 transform transition-all hover:scale-105 mb-4">
+                <h3 class="text-sm font-bold text-gray-300 uppercase mb-4 border-b border-gray-700 pb-2">Simulation
+                    Parameters</h3>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="flex justify-between text-xs text-gray-400 mb-1">
+                            <span>Sim Speed</span>
+                            <span class="text-blue-400">1.0x</span>
+                        </label>
+                        <input type="range"
+                            class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                            min="0.5" max="5.0" step="0.1" value="1.0">
+                    </div>
+
+                    <div>
+                        <label class="flex justify-between text-xs text-gray-400 mb-1">
+                            <span>Visualization Scale</span>
+                            <span id="zoom-level" class="text-blue-400">100%</span>
+                        </label>
+                        <input type="range" id="zoom-control"
+                            class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            min="0.5" max="3.0" step="0.1" value="1.0">
+                    </div>
+
+                    <div class="flex space-x-2 pt-2">
+                        <button
+                            class="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 rounded shadow-lg transition-colors">
+                            PAUSE SIM
+                        </button>
+                        <button
+                            class="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold py-2 rounded shadow-lg transition-colors">
+                            RESET VIEW
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Load Generator Panel -->
+            <div
+                class="bg-gray-800 bg-opacity-90 backdrop-blur-md p-5 rounded-xl border border-gray-700 shadow-2xl w-80 transform transition-all hover:scale-105">
+                <h3 class="text-sm font-bold text-gray-300 uppercase mb-4 border-b border-gray-700 pb-2">Load Generation
+                </h3>
+                <div class="space-y-3">
+                    <div class="flex space-x-2">
+                        <select id="load-origin"
+                            class="flex-1 bg-gray-900 text-xs text-gray-300 rounded p-2 border border-gray-700 focus:border-blue-500 outline-none">
+                            <option value="">Origin</option>
+                        </select>
+                        <span class="text-gray-500 self-center">→</span>
+                        <select id="load-dest"
+                            class="flex-1 bg-gray-900 text-xs text-gray-300 rounded p-2 border border-gray-700 focus:border-blue-500 outline-none">
+                            <option value="">Dest</option>
+                        </select>
+                    </div>
+                    <div class="flex space-x-2">
+                        <select id="load-type"
+                            class="w-1/3 bg-gray-900 text-xs text-gray-300 rounded p-2 border border-gray-700 outline-none">
+                            <option value="passenger">Pax</option>
+                            <option value="cargo">Cargo</option>
+                        </select>
+                        <input id="load-amount" type="number" value="1" min="1" max="10"
+                            class="w-1/3 bg-gray-900 text-xs text-gray-300 rounded p-2 border border-gray-700 text-center">
+                        <button id="btn-generate-load"
+                            class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 rounded shadow-lg transition-colors">
+                            GENERATE
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Event Log Terminal -->
+            <div
+                class="bg-black bg-opacity-80 backdrop-blur-sm p-4 rounded-xl border border-gray-800 shadow-2xl w-96 h-48 flex flex-col font-mono text-xs">
+                <div class="flex justify-between items-center mb-2 border-b border-gray-800 pb-1">
+                    <span class="text-green-500 font-bold">>> SYSTEM_LOG</span>
+                    <span class="animate-pulse w-2 h-2 bg-green-500 rounded-full"></span>
+                </div>
+                <div id="event-stream"
+                    class="overflow-y-auto flex-grow space-y-1 scrollbar-thin scrollbar-thumb-gray-700">
+                    <!-- Events injected here -->
+                </div>
+            </div>
         </div>
     </div>
 
-    <div class="container mx-auto p-4">
-        <header class="mb-6 flex justify-between items-center">
-            <div>
-                <h1 class="text-3xl font-bold">AEXIS Control Center</h1>
-                <p class="text-gray-400">Autonomous Event-Driven Transportation Intelligence System</p>
-            </div>
-            <div id="connection-status" class="px-3 py-1 rounded bg-gray-800 text-sm">
-                Connecting...
-            </div>
-        </header>
-        
-        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- System Overview -->
-            <section class="lg:col-span-2">
-                <div class="bg-gray-800 rounded-lg p-6">
-                    <h2 class="text-xl font-semibold mb-4">System Overview</h2>
-                    
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                        <div class="text-center p-4 bg-gray-900 rounded">
-                            <div class="text-2xl font-bold status-online" id="active-pods">0</div>
-                            <div class="text-sm text-gray-400">Active Pods</div>
-                        </div>
-                        <div class="text-center p-4 bg-gray-900 rounded">
-                            <div class="text-2xl font-bold status-online" id="operational-stations">0</div>
-                            <div class="text-sm text-gray-400">Stations</div>
-                        </div>
-                        <div class="text-center p-4 bg-gray-900 rounded">
-                            <div class="text-2xl font-bold" id="pending-passengers">0</div>
-                            <div class="text-sm text-gray-400">Waiting</div>
-                        </div>
-                        <div class="text-center p-4 bg-gray-900 rounded">
-                            <div class="text-2xl font-bold" id="system-efficiency">0%</div>
-                            <div class="text-sm text-gray-400">Efficiency</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Performance Chart -->
-                    <div class="bg-gray-900 rounded p-4 h-64">
-                        <canvas id="performance-chart"></canvas>
-                    </div>
-                </div>
-            </section>
-            
-            <!-- Network Visualization -->
-            <section class="lg:col-span-1">
-                <div class="bg-gray-800 rounded-lg p-6 h-full">
-                    <h2 class="text-xl font-semibold mb-4">Network Status</h2>
-                    <div class="bg-gray-900 rounded p-4 h-64 lg:h-auto lg:flex-grow">
-                        <!-- Placeholder for network graph -->
-                        <div class="flex items-center justify-center h-full text-gray-500">
-                            Network Graph Visualization
-                        </div>
-                    </div>
-                </div>
-            </section>
-            
-            <!-- Event Stream -->
-            <section class="lg:col-span-3">
-                <div class="bg-gray-800 rounded-lg p-6">
-                    <h2 class="text-xl font-semibold mb-4">Live Event Stream</h2>
-                    <div class="bg-gray-900 rounded p-4 h-64 overflow-y-auto font-mono text-sm" id="event-stream">
-                        <!-- Events will be added here -->
-                    </div>
-                </div>
-            </section>
-        </main>
-    </div>
-    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <script src="/static/visualizer.js"></script>
     <script src="/static/app.js"></script>
 </body>
+
 </html>

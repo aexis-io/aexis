@@ -1,7 +1,6 @@
-
 // State
 let socket = null;
-let chart = null;
+let visualizer = null;
 let reconnectInterval = null;
 const MAX_EVENTS = 50;
 const EFFICIENCY_HISTORY_LENGTH = 30;
@@ -14,53 +13,127 @@ const elements = {
     systemEfficiency: document.getElementById('system-efficiency'),
     eventStream: document.getElementById('event-stream'),
     connectionStatus: document.getElementById('connection-status'),
-    offlineOverlay: document.getElementById('offline-overlay')
+    statusText: document.getElementById('status-text'),
+    zoomControl: document.getElementById('zoom-control'),
+    zoomLevel: document.getElementById('zoom-level')
 };
 
 // Initialize
 function init() {
-    initChart();
+    // Initialize Visualizer
+    try {
+        visualizer = new NetworkVisualizer('network-canvas');
+        console.log("Visualizer initialized");
+    } catch (e) {
+        console.error("Visualizer setup failed:", e);
+    }
+
+    setupControls();
     connectWebSocket();
 }
 
-// Chart.js Setup
-function initChart() {
-    const ctx = document.getElementById('performance-chart').getContext('2d');
-    chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: Array(EFFICIENCY_HISTORY_LENGTH).fill(''),
-            datasets: [{
-                label: 'System Efficiency',
-                data: Array(EFFICIENCY_HISTORY_LENGTH).fill(0),
-                borderColor: '#10b981',
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                borderWidth: 2,
-                tension: 0.1,
-                fill: true
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            plugins: {
-                legend: { display: false }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    max: 100,
-                    grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                    ticks: { color: '#9ca3af', callback: v => v + '%' }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: { display: false }
-                }
+function setupControls() {
+    if (elements.zoomControl) {
+        elements.zoomControl.addEventListener('input', (e) => {
+            const scale = parseFloat(e.target.value);
+            if (visualizer) visualizer.setZoom(scale);
+            if (elements.zoomLevel) elements.zoomLevel.textContent = Math.round(scale * 100) + '%';
+        });
+    }
+
+    const pauseBtn = document.querySelector('button:nth-child(1)'); // "PAUSE SIM"
+    const resetBtn = document.querySelector('button:nth-child(2)'); // "RESET VIEW"
+
+    if (pauseBtn) {
+        pauseBtn.addEventListener('click', () => {
+            if (!visualizer) return;
+            const isPaused = pauseBtn.textContent === "RESUME SIM";
+            visualizer.setPaused(!isPaused);
+            pauseBtn.textContent = isPaused ? "PAUSE SIM" : "RESUME SIM";
+            pauseBtn.classList.toggle('bg-blue-600');
+            pauseBtn.classList.toggle('bg-yellow-600');
+        });
+    }
+
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            if (visualizer) {
+                visualizer.resetView();
+                if (elements.zoomControl) elements.zoomControl.value = 1.0;
+                if (elements.zoomLevel) elements.zoomLevel.textContent = "100%";
             }
-        }
+        });
+    }
+
+    setupLoadGenerator();
+}
+
+function setupLoadGenerator() {
+    const originSelect = document.getElementById('load-origin');
+    const destSelect = document.getElementById('load-dest');
+    const typeSelect = document.getElementById('load-type');
+    const amountInput = document.getElementById('load-amount');
+    const generateBtn = document.getElementById('btn-generate-load');
+
+    if (generateBtn) {
+        generateBtn.addEventListener('click', async () => {
+            const origin = originSelect.value;
+            const dest = destSelect.value;
+            const type = typeSelect.value;
+            const amount = parseInt(amountInput.value);
+
+            if (!origin || !dest || origin === dest) {
+                logEvent("Invalid Route or Missing Selection", "error");
+                return;
+            }
+
+            try {
+                const endpoint = type === 'passenger' ? '/api/manual/passenger' : '/api/manual/cargo';
+                const payload = {
+                    origin: origin,
+                    destination: dest,
+                    count: amount,
+                    weight: amount * 100 // Approximation for cargo
+                };
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    logEvent(`${type.toUpperCase()} Request Sent: ${origin} -> ${dest}`, "success");
+                } else {
+                    logEvent("Request Failed", "error");
+                }
+
+            } catch (e) {
+                logEvent(`Error: ${e.message}`, "error");
+            }
+        });
+    }
+}
+
+// Helper to populate dropdowns once data arrives
+let dropdownsPopulated = false;
+function updateDropdowns(stations) {
+    if (dropdownsPopulated || !stations) return;
+
+    const originSelect = document.getElementById('load-origin');
+    const destSelect = document.getElementById('load-dest');
+
+    // Clear
+    originSelect.innerHTML = '<option value="">Origin</option>';
+    destSelect.innerHTML = '<option value="">Dest</option>';
+
+    Object.keys(stations).sort().forEach(id => {
+        const name = id.replace('station_', 'S'); // Short name
+        originSelect.innerHTML += `<option value="${id}">${name}</option>`;
+        destSelect.innerHTML += `<option value="${id}">${name}</option>`;
     });
+
+    dropdownsPopulated = true;
 }
 
 // WebSocket Connection
@@ -109,6 +182,7 @@ function handleMessage(payload) {
             break;
         case 'pod_decision':
             logEvent(`Pod ${payload.data.pod_id}: ${payload.data.action}`, 'info');
+            // Optimistically update pod in visualizer if needed, though system_state handles positions
             break;
         case 'congestion_alert':
             logEvent(`Congestion at ${payload.data.station_id}`, 'warning');
@@ -132,11 +206,13 @@ function updateMetrics(data) {
     const efficiency = Math.round((metrics.system_efficiency || 0) * 100);
     elements.systemEfficiency.textContent = `${efficiency}%`;
 
-    // Update Chart
-    const newData = chart.data.datasets[0].data;
-    newData.shift();
-    newData.push(efficiency);
-    chart.update();
+    if (visualizer) {
+        visualizer.updateData(data);
+    }
+
+    if (data.stations) {
+        updateDropdowns(data.stations);
+    }
 }
 
 function updateStatus(text, status) {

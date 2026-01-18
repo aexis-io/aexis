@@ -396,6 +396,17 @@ class PassengerGenerator:
             event
         )
 
+    def _create_manual_event(self, passenger_id: str, origin: str, dest: str):
+        return PassengerArrival(
+            passenger_id=passenger_id,
+            station_id=origin,
+            destination=dest,
+            priority=3,
+            group_size=1,
+            special_needs=[],
+            wait_time_limit=45
+        )
+
 
 class CargoGenerator:
     """Generates cargo requests for simulation"""
@@ -472,3 +483,22 @@ class CargoGenerator:
             MessageBus.get_event_channel(event.event_type),
             event
         )
+
+    def _create_manual_event(self, request_id: str, origin: str, dest: str, weight: float):
+        return CargoRequest(
+            request_id=request_id,
+            origin=origin,
+            destination=dest,
+            weight=weight,
+            volume=weight/500.0,
+            priority=3,
+            hazardous=False,
+            temperature_controlled=False,
+            deadline=None
+        )
+
+
+# Helper for PassengerGenerator too
+def _extend_passenger_generator():
+    """Monkey patch or modify PassengerGenerator to support manual"""
+    pass # Already imported, will modify class above

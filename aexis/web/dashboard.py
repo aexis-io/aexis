@@ -87,12 +87,20 @@ class WebDashboard:
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket endpoint for real-time updates"""
             await self._handle_websocket(websocket)
-            
-    async def _proxy_request(self, method: str, path: str):
+        
+        # Generic Proxy for Manual Injection
+        @self.app.post("/api/manual/{path:path}")
+        async def proxy_post(path: str, request: Dict):
+            return await self._proxy_request("POST", f"/api/manual/{path}", json_data=request)
+
+    async def _proxy_request(self, method: str, path: str, json_data: Optional[Dict] = None):
         """Generic proxy handler with resilience"""
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.request(method, f"{self.api_base_url}{path}")
+                if json_data:
+                    response = await client.request(method, f"{self.api_base_url}{path}", json=json_data)
+                else:
+                    response = await client.request(method, f"{self.api_base_url}{path}")
                 if response.status_code == 404:
                     raise HTTPException(status_code=404, detail="Resource not found")
                 return response.json()

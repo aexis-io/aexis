@@ -5,12 +5,13 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import json
 
+import random
 from .model import SystemSnapshot, Event
 from .message_bus import MessageBus
 from .pod import Pod
 from .station import Station, PassengerGenerator, CargoGenerator
 from .ai_provider import AIProviderFactory
-from .errors import create_error, ErrorCode
+from .errors import create_error, ErrorCode, handle_exception
 
 
 logger = logging.getLogger(__name__)
@@ -225,27 +226,39 @@ class AexisSystem:
         logger.info("Setup passenger and cargo generators")
     
     def _get_connected_stations(self, station_id: str, all_stations: List[str]) -> List[str]:
-        """Get connected stations for a given station"""
+        """Get connected stations creating a complex mesh topology"""
         station_index = all_stations.index(station_id)
         total_stations = len(all_stations)
-        
-        # Ring topology with some cross connections
         connected = []
         
-        # Next station in ring
+        # 1. Ring connections (Next and Prev)
         next_index = (station_index + 1) % total_stations
-        connected.append(all_stations[next_index])
-        
-        # Previous station in ring
         prev_index = (station_index - 1) % total_stations
+        connected.append(all_stations[next_index])
         connected.append(all_stations[prev_index])
         
-        # Add some cross connections
-        if station_index % 2 == 0:  # Even numbered stations
-            cross_index = (station_index + total_stations // 2) % total_stations
-            connected.append(all_stations[cross_index])
-        
-        return connected
+        # 2. 'Hub' connections (Every 4th station is a hub connected to many)
+        if station_index % 4 == 0:
+            # Connect to other hubs
+            for i in range(0, total_stations, 4):
+                if i != station_index:
+                    connected.append(all_stations[i])
+        else:
+            # Connect to nearest hub
+            nearest_hub_idx = (station_index // 4) * 4
+            if all_stations[nearest_hub_idx] not in connected and nearest_hub_idx != station_index:
+                connected.append(all_stations[nearest_hub_idx])
+
+        # 3. Random 'Shortcut' (deterministic based on ID to remain consistent)
+        import hashlib
+        hash_val = int(hashlib.md5(f"{station_id}_salt".encode()).hexdigest(), 16)
+        random_offset = (hash_val % (total_stations - 3)) + 2 # Avoid self, prev, next
+        random_idx = (station_index + random_offset) % total_stations
+        target = all_stations[random_idx]
+        if target not in connected and target != station_id:
+            connected.append(target)
+            
+        return list(set(connected)) # Deduplicate
     
     async def _system_monitor(self):
         """Monitor system metrics and publish snapshots"""
@@ -371,6 +384,31 @@ class AexisSystem:
         """Get specific pod state"""
         pod = self.pods.get(pod_id)
         return pod.get_state() if pod else None
+    
+    async def inject_passenger_request(self, origin_id: str, dest_id: str, count: int = 1):
+        """Manually inject passenger request"""
+        if self.passenger_generator:
+            for _ in range(count):
+                # Manually create request via generator logic or directly to event bus
+                # Direct event bus is cleaner
+                passenger_id = f"manual_p_{datetime.utcnow().strftime('%H%M%S')}_{random.randint(100,999)}"
+                event = self.passenger_generator._create_manual_event(passenger_id, origin_id, dest_id)
+                await self.message_bus.publish_event(
+                    MessageBus.get_event_channel(event.event_type),
+                    event
+                )
+                logger.info(f"Manually injected passenger {passenger_id} at {origin_id} -> {dest_id}")
+
+    async def inject_cargo_request(self, origin_id: str, dest_id: str, weight: float = 100.0):
+        """Manually inject cargo request"""
+        if self.cargo_generator:
+             request_id = f"manual_c_{datetime.utcnow().strftime('%H%M%S')}_{random.randint(100,999)}"
+             event = self.cargo_generator._create_manual_event(request_id, origin_id, dest_id, weight)
+             await self.message_bus.publish_event(
+                MessageBus.get_event_channel(event.event_type),
+                event
+             )
+             logger.info(f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
     
     def get_station_state(self, station_id: str) -> Optional[Dict]:
         """Get specific station state"""

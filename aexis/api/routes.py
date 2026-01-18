@@ -95,6 +95,38 @@ class SystemAPI:
             except Exception as e:
                 error_details = handle_exception(e, "SystemAPI")
                 raise HTTPException(status_code=500, detail=error_details.message)
+
+        @self.app.post("/api/manual/passenger")
+        async def inject_passenger(request: Dict):
+            try:
+                origin = request.get('origin')
+                dest = request.get('destination')
+                count = request.get('count', 1)
+                # Validation
+                if not origin or not dest:
+                    raise HTTPException(status_code=400, detail="Missing origin or destination")
+                
+                await self.system.inject_passenger_request(origin, dest, count)
+                return {"status": "success", "message": f"Injected {count} passengers"}
+            except Exception as e:
+                error_details = handle_exception(e, "SystemAPI")
+                raise HTTPException(status_code=500, detail=error_details.message)
+
+        @self.app.post("/api/manual/cargo")
+        async def inject_cargo(request: Dict):
+            logger.info('Injecting cargo payload => {request}')
+            try:
+                origin = request.get('origin')
+                dest = request.get('destination')
+                weight = request.get('weight', 100.0)
+                if not origin or not dest:
+                    raise HTTPException(status_code=400, detail="Missing origin or destination")
+                
+                await self.system.inject_cargo_request(origin, dest, weight)
+                return {"status": "success", "message": "Injected cargo request"}
+            except Exception as e:
+                error_details = handle_exception(e, "SystemAPI")
+                raise HTTPException(status_code=500, detail=error_details.message)
     
     def get_app(self) -> FastAPI:
         """Get FastAPI application instance"""
