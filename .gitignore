@@ -273,3 +273,6 @@ flycheck_*.el
 
 # undo-tree
 *.~undo-tree~
+.agent
+.windsurf
+.github
