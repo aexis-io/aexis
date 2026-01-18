@@ -2,16 +2,15 @@ import asyncio
 import os
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
 
 import random
-from .model import SystemSnapshot, Event
+from .model import SystemSnapshot
 from .message_bus import MessageBus
 from .pod import Pod
 from .station import Station, PassengerGenerator, CargoGenerator
 from .ai_provider import AIProviderFactory
-from .errors import create_error, ErrorCode, handle_exception
+from .errors import handle_exception
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,7 @@ class AexisSystem:
             await self._setup_generators()
             
             # Start system monitoring
-            self.start_time = datetime.utcnow()
+            self.start_time = datetime.now()
             
             logger.info(f"AEXIS system initialized with {len(self.stations)} stations and {len(self.pods)} pods")
             return True
@@ -318,7 +317,7 @@ class AexisSystem:
         
         # Calculate throughput per hour
         if self.start_time:
-            hours_running = (datetime.utcnow() - self.start_time).total_seconds() / 3600
+            hours_running = (datetime.now() - self.start_time).total_seconds() / 3600
             throughput_per_hour = total_processed / hours_running if hours_running > 0 else 0
         else:
             throughput_per_hour = 0
@@ -372,9 +371,9 @@ class AexisSystem:
         """Get complete system state"""
         return {
             'system_id': 'aexis_main',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now().isoformat(),
             'running': self.running,
-            'uptime_seconds': (datetime.utcnow() - self.start_time).total_seconds() if self.start_time else 0,
+            'uptime_seconds': (datetime.now() - self.start_time).total_seconds() if self.start_time else 0,
             'metrics': self.metrics,
             'stations': {sid: station.get_state() for sid, station in self.stations.items()},
             'pods': {pid: pod.get_state() for pid, pod in self.pods.items()}
@@ -391,7 +390,7 @@ class AexisSystem:
             for _ in range(count):
                 # Manually create request via generator logic or directly to event bus
                 # Direct event bus is cleaner
-                passenger_id = f"manual_p_{datetime.utcnow().strftime('%H%M%S')}_{random.randint(100,999)}"
+                passenger_id = f"manual_p_{datetime.now().strftime('%H%M%S')}_{random.randint(100,999)}"
                 event = self.passenger_generator._create_manual_event(passenger_id, origin_id, dest_id)
                 await self.message_bus.publish_event(
                     MessageBus.get_event_channel(event.event_type),
@@ -402,7 +401,7 @@ class AexisSystem:
     async def inject_cargo_request(self, origin_id: str, dest_id: str, weight: float = 100.0):
         """Manually inject cargo request"""
         if self.cargo_generator:
-             request_id = f"manual_c_{datetime.utcnow().strftime('%H%M%S')}_{random.randint(100,999)}"
+             request_id = f"manual_c_{datetime.now().strftime('%H%M%S')}_{random.randint(100,999)}"
              event = self.cargo_generator._create_manual_event(request_id, origin_id, dest_id, weight)
              await self.message_bus.publish_event(
                 MessageBus.get_event_channel(event.event_type),

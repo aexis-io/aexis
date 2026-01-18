@@ -36,11 +36,13 @@ class MessageBus:
                 retry_on_timeout=True
             )
             
-            # Test connection with authentication
-            if self.password:
-                await self.redis_client.auth(self.password)
+            # Test connection
             
             await self.redis_client.ping()
+            
+            # Create pubsub for subscription handling
+            self.pubsub = self.redis_client.pubsub()
+            
             logger.info("Connected to Redis message bus")
             return True
             
@@ -71,9 +73,9 @@ class MessageBus:
         """Close Redis connection"""
         try:
             if self.pubsub:
-                await self.pubsub.close()
+                await self.pubsub.aclose()
             if self.redis_client:
-                await self.redis_client.close()
+                await self.redis_client.aclose()
             self.running = False
             logger.info("Disconnected from Redis message bus")
         except Exception as e:
@@ -98,18 +100,20 @@ class MessageBus:
                     context={"event_type": event.event_type, "event_id": event.event_id}
                 )
             
+            # Serialize the entire event dataclass, not just event.data
+            from dataclasses import asdict
+            event_dict = asdict(event)
+            # Convert datetime to ISO string
+            if 'timestamp' in event_dict:
+                event_dict['timestamp'] = event.timestamp.isoformat()
+            
             message = {
                 "channel": channel,
-                "message": {
-                    "event_id": event.event_id,
-                    "event_type": event.event_type,
-                    "timestamp": event.timestamp.isoformat(),
-                    "source": event.source,
-                    "data": event.data
-                }
+                "message": event_dict
             }
             
             await self.redis_client.publish(channel, json.dumps(message))
+            print(f"DEBUG: Published {event.event_type} to {channel}")
             logger.debug(f"Published {event.event_type} to {channel}")
             return True
             
@@ -204,6 +208,11 @@ class MessageBus:
             
             if channel not in self.subscribers:
                 self.subscribers[channel] = []
+                # If already running, we need to subscribe in Redis too
+                if self.running and self.pubsub:
+                    asyncio.create_task(self.pubsub.subscribe(channel))
+                    logger.info(f"Dynamically subscribed to Redis channel: {channel}")
+
             self.subscribers[channel].append(handler)
             logger.debug(f"Subscribed handler to {channel}")
             
@@ -251,11 +260,14 @@ class MessageBus:
             self.running = True
             
             # Listen for messages
+            print("Starting message listener loop...")
             async for message in self.pubsub.listen():
                 if not self.running:
+                    print("Message listener stopped (not running)")
                     break
                 
                 if message['type'] == 'message':
+                    print(f"DEBUG: Received Redis message on {message['channel']}")
                     await self._handle_message(message)
                     
         except Exception as e:
@@ -306,7 +318,7 @@ class MessageBus:
             self.running = False
             if self.pubsub:
                 await self.pubsub.unsubscribe()
-                await self.pubsub.reset()
+                await self.pubsub.aclose()
             logger.info("Stopped listening to Redis channels")
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")

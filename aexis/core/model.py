@@ -144,7 +144,8 @@ class CongestionAlert(Event):
 @dataclass
 class SystemSnapshot(Event):
     event_type: str = "SystemSnapshot"
-    snapshot_id: str = field(default_factory=lambda: f"snap_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+    snapshot_id: str = field(
+        default_factory=lambda: f"snap_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}")
     system_state: Dict[str, Any] = field(default_factory=dict)
 
 
