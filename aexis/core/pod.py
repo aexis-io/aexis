@@ -1,7 +1,7 @@
 import asyncio
 import time
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 from .model import (
@@ -60,7 +60,7 @@ class PodDecisionEngine:
         if not self.ai_enabled:
             # Check if we can re-enable AI
             if self.last_ai_failure and \
-               datetime.now(datetime.UTC) - self.last_ai_failure > timedelta(minutes=30):
+               datetime.now(timezone.utc) - self.last_ai_failure > timedelta(minutes=30):
                 self.ai_enabled = True
                 self.ai_failure_count = 0
                 logger.info(f"Re-enabling AI for pod {self.pod_id}")
@@ -268,7 +268,7 @@ Key Principles:
     def _handle_ai_failure(self):
         """Handle AI decision failure"""
         self.ai_enabled = False
-        self.last_ai_failure = datetime.now(datetime.UTC)
+        self.last_ai_failure = datetime.now(timezone.utc)
         self.ai_failure_count += 1
 
         # Exponential backoff for re-enabling
@@ -281,7 +281,7 @@ Key Principles:
 
     def _record_decision(self, decision: Decision, was_fallback: bool):
         """Record decision for learning and analysis"""
-        decision.timestamp = datetime.now(datetime.UTC)
+        decision.timestamp = datetime.now(timezone.utc)
         self.decision_history.append(decision)
 
         # Keep only recent decisions
@@ -379,7 +379,7 @@ class Pod(EventProcessor):
             if route:
                 self.current_route = route
                 self.status = PodStatus.EN_ROUTE
-                self.movement_start_time = datetime.now(datetime.UTC)
+                self.movement_start_time = datetime.now(timezone.utc)
 
                 # Estimate arrival time (simplified)
                 self.estimated_arrival = self.movement_start_time + \
@@ -448,7 +448,7 @@ class Pod(EventProcessor):
         if decision.route:
             self.current_route = decision.route
             self.status = PodStatus.EN_ROUTE
-            self.movement_start_time = datetime.now(datetime.UTC)
+            self.movement_start_time = datetime.now(timezone.utc)
 
             # Update capacity based on accepted requests
             # This would be more sophisticated in real implementation
