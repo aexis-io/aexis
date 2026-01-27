@@ -30,7 +30,7 @@ async def main():
             app=app,
             host=host,
             port=port,
-            log_level="info"
+            log_level="warning"
         )
         server = uvicorn.Server(config)
         await server.serve()

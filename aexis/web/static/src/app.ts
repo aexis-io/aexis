@@ -1,10 +1,6 @@
 import { NetworkVisualizer } from './visualizer.js';
 
 
-
-
-// --- Types ---
-
 interface DOMElements {
   activePods: HTMLElement | null;
   operationalStations: HTMLElement | null;
@@ -40,14 +36,10 @@ interface WebSocketMessage {
 type LogEventType = 'info' | 'warning' | 'error' | 'success';
 type StatusType = 'online' | 'offline' | 'warning';
 
-// --- State ---
-
 let socket: WebSocket | null = null;
 let visualizer: NetworkVisualizer | null = null;
 let reconnectInterval: number | null = null;
 const MAX_EVENTS = 50;
-
-// --- DOM Elements ---
 
 const elements: DOMElements = {
   activePods: document.getElementById('active-pods'),
@@ -62,19 +54,15 @@ const elements: DOMElements = {
   offlineOverlay: document.getElementById('offline-overlay')
 };
 
-// --- Initialization ---
-
 function init(): void {
   try {
     visualizer = new NetworkVisualizer('network-canvas');
-    console.log("Visualizer initialized");
   } catch (e) {
     console.error("Visualizer setup failed:", e);
   }
 
-  setupControls();
+  // setupControls();
   connectWebSocket();
-  console.log("App initialized");
 }
 
 function setupControls(): void {

@@ -15,7 +15,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('aexis_core.messageing.log')
+        logging.FileHandler('aexis_core.messaging.log')
     ]
 )
 logger = logging.getLogger(__name__)

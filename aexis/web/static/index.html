@@ -20,17 +20,15 @@
         <!-- Top Bar: Header & Stats -->
         <header class="flex justify-between items-start pointer-events-auto">
             <div>
-                <h1 class="text-4xl font-bold tracking-tighter text-blue-500 drop-shadow-lg"
-                    style="font-family: 'Courier New', monospace;">AEXIS</h1>
+                <h1 class="text-4xl font-bold tracking-tighter text-white drop-shadow-lg"
+                    style="font-family: 'Inter', monospace;">AEXIS</h1>
                 <div class="flex items-center space-x-2 mt-1">
                     <div id="connection-status" class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
-                    <span class="text-xs text-blue-300 font-mono tracking-widest uppercase">System Link: <span
-                            id="status-text">OFFLINE</span></span>
                 </div>
             </div>
 
             <!-- Live Metrics HUD -->
-            <div
+            <!-- <div
                 class="grid grid-cols-4 gap-4 bg-gray-800 bg-opacity-80 backdrop-blur-md p-4 rounded-xl border border-gray-700 shadow-2xl">
                 <div class="text-center">
                     <div class="text-xs text-gray-400 uppercase tracking-wider">Pods Active</div>
@@ -48,13 +46,11 @@
                     <div class="text-xs text-gray-400 uppercase tracking-wider">Stations</div>
                     <div class="text-2xl font-bold text-purple-400 font-mono" id="operational-stations">0</div>
                 </div>
-            </div>
+            </div> -->
         </header>
 
         <!-- Bottom Section: Controls & Event Log -->
-        <div class="flex justify-between items-end gap-6 pointer-events-auto">
-
-            <!-- Controls Panel -->
+        <!-- <div class="flex justify-between items-end gap-6 pointer-events-auto">
             <div
                 class="bg-gray-800 bg-opacity-90 backdrop-blur-md p-5 rounded-xl border border-gray-700 shadow-2xl w-80 transform transition-all hover:scale-105 mb-4">
                 <h3 class="text-sm font-bold text-gray-300 uppercase mb-4 border-b border-gray-700 pb-2">Simulation
@@ -93,9 +89,9 @@
                     </div>
                 </div>
             </div>
-
+ -->
             <!-- Load Generator Panel -->
-            <div
+            <!-- <div
                 class="bg-gray-800 bg-opacity-90 backdrop-blur-md p-5 rounded-xl border border-gray-700 shadow-2xl w-80 transform transition-all hover:scale-105">
                 <h3 class="text-sm font-bold text-gray-300 uppercase mb-4 border-b border-gray-700 pb-2">Load Generation
                 </h3>
@@ -125,10 +121,10 @@
                         </button>
                     </div>
                 </div>
-            </div>
+            </div> -->
 
             <!-- Event Log Terminal -->
-            <div
+            <!-- <div
                 class="bg-black bg-opacity-80 backdrop-blur-sm p-4 rounded-xl border border-gray-800 shadow-2xl w-96 h-48 flex flex-col font-mono text-xs">
                 <div class="flex justify-between items-center mb-2 border-b border-gray-800 pb-1">
                     <span class="text-green-500 font-bold">>> SYSTEM_LOG</span>
@@ -136,9 +132,9 @@
                 </div>
                 <div id="event-stream"
                     class="overflow-y-auto flex-grow space-y-1 scrollbar-thin scrollbar-thumb-gray-700">
-                    <!-- Events injected here -->
+                    Events injected here
                 </div>
-            </div>
+            </div> -->
         </div>
     </div>
 

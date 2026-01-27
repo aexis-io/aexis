@@ -653,11 +653,11 @@ class NetworkVisualizer {
     // Simple glowing dot for nodes
     for (const node of this.nodes.values()) {
         this.nodeLayer.beginFill(0x00fbff, 0.3);
-        this.nodeLayer.drawCircle(node.x, node.y, 4);
+        this.nodeLayer.drawCircle(node.x, node.y, 12);
         this.nodeLayer.endFill();
         
         this.nodeLayer.beginFill(0xffffff, 1);
-        this.nodeLayer.drawCircle(node.x, node.y, 1.5);
+        this.nodeLayer.drawCircle(node.x, node.y, 3.5);
         this.nodeLayer.endFill();
     }
   }

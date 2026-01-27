@@ -47,13 +47,15 @@ async def main():
         host = os.getenv('API_HOST', '0.0.0.0')
         port = int(os.getenv('API_PORT', '8001'))
         
-        logger.info(f"Starting System API on {host}:{port}")
+        logger.warning(f"Starting System API on {host}:{port} from {os.getcwd()}")
         
         config = uvicorn.Config(
             app=app,
             host=host,
             port=port,
-            log_level="info"
+            log_level="warning",
+            reload=True,
+            reload_dirs=["."],
         )
         server = uvicorn.Server(config)
         

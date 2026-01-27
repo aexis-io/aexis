@@ -11,6 +11,7 @@ from .pod import Pod
 from .station import Station, PassengerGenerator, CargoGenerator
 from .ai_provider import AIProviderFactory
 from .errors import handle_exception
+from . import load_network_data
 
 
 logger = logging.getLogger(__name__)
@@ -187,17 +188,49 @@ class AexisSystem:
         logger.info("AEXIS system shutdown complete")
     
     async def _create_stations(self):
-        """Create station instances"""
-        station_ids = [f"station_{i:03d}" for i in range(1, self.station_count + 1)]
+        """Create station instances from network.json nodes"""
+        network_path = os.getenv('AEXIS_NETWORK_DATA', 'aexis/network.json')
+        network_data = load_network_data(network_path)
         
-        for station_id in station_ids:
+        if not network_data or 'nodes' not in network_data:
+            logger.warning("No network data found, falling back to generated stations")
+            # Fallback to old behavior
+            station_ids = [f"station_{i:03d}" for i in range(1, self.station_count + 1)]
+            for station_id in station_ids:
+                station = Station(self.message_bus, station_id)
+                station.connected_stations = self._get_connected_stations(station_id, station_ids)
+                self.stations[station_id] = station
+            return
+        
+        # Build stations from network nodes
+        nodes = network_data['nodes']
+        
+        # First pass: create all stations
+        for node in nodes:
+            station_id = f"station_{node['id']}"
             station = Station(self.message_bus, station_id)
+            print('Loaded station: ' + station_id)
             
-            # Set connected stations (simplified ring topology)
-            station.connected_stations = self._get_connected_stations(station_id, station_ids)
+            # Store coordinate for potential future use
+            station.coordinate = node.get('coordinate', {'x': 0, 'y': 0})
             
             self.stations[station_id] = station
-            logger.info(f"Created station: {station_id}")
+        
+        # Second pass: set connected stations from adjacency
+        for node in nodes:
+            station_id = f"station_{node['id']}"
+            station = self.stations.get(station_id)
+            if station:
+                connected = []
+                for adj in node.get('adj', []):
+                    connected_station_id = f"station_{adj['node_id']}"
+                    if connected_station_id in self.stations:
+                        connected.append(connected_station_id)
+                station.connected_stations = connected
+                logger.info(f"Created station: {station_id} connected to {connected}")
+        
+        # Update station_count to reflect actual count
+        self.station_count = len(self.stations)
     
     async def _create_pods(self):
         """Create pod instances"""
