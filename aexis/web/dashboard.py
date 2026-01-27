@@ -12,6 +12,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+class NoCacheStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs) -> FileResponse:
+        response = super().file_response(*args, **kwargs)
+        # Force no caching for all static files (especially JS/CSS)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 class WebDashboard:
     """FastAPI web dashboard - serves SPA and proxies API requests"""
@@ -48,7 +56,7 @@ class WebDashboard:
         """Setup API routes"""
         
         @self.app.get("/")
-        async def read_root():
+        async def index():
             """Serve main dashboard SPA"""
             # Serve the index.html file
             return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
@@ -117,7 +125,7 @@ class WebDashboard:
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         if not os.path.exists(static_dir):
             os.makedirs(static_dir)
-        self.app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        self.app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
     
     async def _handle_websocket(self, websocket: WebSocket):
         """Handle WebSocket connections for real-time updates"""

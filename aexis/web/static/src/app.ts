@@ -82,9 +82,9 @@ function setupControls(): void {
     elements.zoomControl.addEventListener('input', (e: Event) => {
       const target = e.target as HTMLInputElement;
       const scale = parseFloat(target.value);
-      if (visualizer) {
-        visualizer.setZoom(scale);
-      }
+      // if (visualizer) {
+      //   visualizer.setZoom(scale);
+      // }
       if (elements.zoomLevel) {
         elements.zoomLevel.textContent = Math.round(scale * 100) + '%';
       }
@@ -130,7 +130,6 @@ function setupLoadGenerator(): void {
 
   if (generateBtn) {
     generateBtn.addEventListener('click', async () => {
-      logEvent("Generating load...");
       const origin = originSelect?.value || '';
       const dest = destSelect?.value || '';
       const type = typeSelect?.value || 'passenger';
