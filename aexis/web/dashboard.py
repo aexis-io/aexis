@@ -71,6 +71,11 @@ class WebDashboard:
             """Proxy system metrics from API"""
             return await self._proxy_request("GET", "/api/system/metrics")
         
+        @self.app.get("/api/network")
+        async def get_network():
+            """Proxy network topology from API"""
+            return await self._proxy_request("GET", "/api/network")
+        
         @self.app.get("/api/pods")
         async def get_all_pods():
             """Proxy all pod states from API"""

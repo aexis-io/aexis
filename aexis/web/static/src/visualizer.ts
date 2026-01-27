@@ -10,6 +10,7 @@ interface Node {
   id: string;
   x: number;
   y: number;
+  connectedSpines: string[]; // Edge IDs connected to this node
 }
 
 /**
@@ -28,8 +29,8 @@ interface PathSegment {
  */
 interface PathSpine {
   id: string;
-  startNode: Node;
-  endNode: Node;
+  startNodeId: string;
+  endNodeId: string;
   segments: PathSegment[];
   totalLength: number; 
 }
@@ -49,9 +50,12 @@ interface Pod {
   id: string;
   gfx: PIXI.Graphics;
   spineId: string;
-  distanceAlongPath: number; // The authoritative scalar position [0, totalLength]
-  speed: number;             // Units per frame/delta
+  distanceAlongPath: number;
+  speed: number;
   data: Record<string, unknown>;
+  // For interpolation
+  targetDistance: number;
+  lastUpdate: number;
 }
 
 interface VisualizerConfig {
@@ -194,9 +198,7 @@ class NetworkVisualizer {
       this.drawGrid();
       this.drawSpines();
     });
-    
-    console.log('Visualizer initialized');
-  }
+      }
 
   setupInteraction(): void {
     if (!this.app) return;
@@ -300,20 +302,54 @@ class NetworkVisualizer {
   }
 
   syncPods(podsData: Record<string, any>): void {
+    const now = Date.now();
+    
+    // 1. Mark all existing pods as unseen
+    const unseenIds = new Set(this.pods.keys());
+
     for (const [id, data] of Object.entries(podsData)) {
         let pod = this.pods.get(id);
+        unseenIds.delete(id);
+
         if (!pod) {
             pod = this.createPod(id, data);
             this.pods.set(id, pod);
         }
+        
+        // Update authoritative state
         pod.data = data;
         
-        // Simple assignment for now, simulation will take over
+        // If spine changed, jump to it (or handle transition if advanced)
         if (data.spine_id && pod.spineId !== data.spine_id) {
             pod.spineId = data.spine_id;
+            // When switching spines, we might want to snap or interpolate.
+            // For now, snap to ensure correctness.
             pod.distanceAlongPath = data.distance ?? 0;
         }
+        
+        // Update target for interpolation
+        // Assuming backend sends 'distance' property
+        if (typeof data.distance === 'number') {
+            // Simple interpolation setup:
+            // We know where it is NOW (visual), and where server says it is (target).
+            pod.targetDistance = data.distance;
+            pod.lastUpdate = now;
+            
+            // If the jump is too large (e.g. initial load), snap
+            if (Math.abs(pod.targetDistance - pod.distanceAlongPath) > 100) {
+                pod.distanceAlongPath = pod.targetDistance;
+            }
+        }
     }
+    
+    // 2. Remove stale pods
+    unseenIds.forEach(id => {
+        const pod = this.pods.get(id);
+        if (pod) {
+            pod.gfx.destroy(); // Remove from scene
+            this.pods.delete(id);
+        }
+    });
   }
 
   createPod(id: string, data: any): Pod {
@@ -335,35 +371,53 @@ class NetworkVisualizer {
         gfx,
         spineId: data.spine_id || "",
         distanceAlongPath: data.distance || 0,
-        speed: 1.0,
+        targetDistance: data.distance || 0,
+        speed: 0, // Speed is derived from server updates now
+        lastUpdate: Date.now(),
         data: data
     };
   }
 
   animate(delta: number): void {
+    // interpolation factor (tunable)
+    const lerpFactor = 0.1; 
+
     this.pods.forEach(pod => {
         const spine = this.spines.get(pod.spineId);
         if (!spine) return;
 
-        // Authoritative Movement
-        // Note: For now we move forward and loop back for visual feedback
-        pod.distanceAlongPath += pod.speed * delta;
-        if (pod.distanceAlongPath > spine.totalLength) {
-            pod.distanceAlongPath = 0;
+        // Simple Linear Interpolation towards server state
+        // This smooths out the jitter from 1-2s polling intervals
+        const diff = pod.targetDistance - pod.distanceAlongPath;
+        
+        // If distance is small, just move; if large (wrap around?), snap.
+        // Assuming spines are linear and don't loop internally.
+        if (Math.abs(diff) > 0.1) {
+            pod.distanceAlongPath += diff * lerpFactor;
+        } else {
+            pod.distanceAlongPath = pod.targetDistance;
         }
 
-        // authoritative sample
+        // authoritative sample & render
+        // Even if halted, we update position (it stays at endpoint)
         const sample = this.sampleSpine(spine, pod.distanceAlongPath);
-        
-        // derived view update
         pod.gfx.position.set(sample.position.x, sample.position.y);
+        
+        // Orient towards tangent
+        // Optimization: Don't rotate if barely moving to avoid jitter
+        // But for TRON lines, constant rotation based on tangent is fine
         pod.gfx.rotation = Math.atan2(sample.tangent.y, sample.tangent.x);
     });
   }
 
+  /**
+   * Offline Routing: REMOVED
+   * The visualizer is now a dumb terminal. Routing happens on the backend.
+   */
+
   async loadLayout(): Promise<void> {
     try {
-      const response = await fetch('/static/network.json');
+      const response = await fetch('/api/network');
       const data = await response.json() as NetworkData;
       
       // Apply layout scale to coordinates if needed, or assume they are pre-scaled
@@ -392,7 +446,8 @@ class NetworkVisualizer {
         this.nodes.set(n.id, {
             id: n.id,
             x: n.coordinate.x,
-            y: n.coordinate.y
+            y: n.coordinate.y,
+            connectedSpines: []
         });
     });
 
@@ -412,34 +467,38 @@ class NetworkVisualizer {
             if (!endNode) return;
 
             // Simple deduplication: "minId-maxId"
-            const edgeId = [sourceNode.id, targetId].sort().join('-');
+            // For routing, we treat this edge as bidirectional conceptually, 
+            // but our simulation moves along one vector.
+            // To allow bidirectional travel, we might need TWO spines (A->B and B->A) 
+            // OR intelligent traversal that handles negative speed.
+            // Simplest for now: Create two directed spines for every link so pods can flow both ways easily.
+            // Wait, typically edges are undirected. Let's stick to unique edges and handle "reverse" traversal later.
+            // Actually, for "pickNextRoute" to work easily with "distanceAlongPath", 
+            // it's easiest if spines are directed paths A->B.
+            // If the graph is undirected, we should probably generate TWO directed spines per adjacency
+            // so we don't have to handle "moving backwards" logic right now.
             
-            if (seenEdges.has(edgeId)) return;
-            seenEdges.add(edgeId);
-
+            // Let's create directed spines for EVERY adjacency.
+            // edgeId = "source->target"
+            const edgeId = `${sourceNode.id}->${targetId}`;
+            
             // Generate geometry (Octilinear path between nodes)
-            // Note: We currently just get a path between the two points.
-            // If we want more complex routing, we'd need pathfinding.
             const pathPoints = this.getOctilinearPath(startNode.x, startNode.y, endNode.x, endNode.y);
             
             const spine = this.createSpine(pathPoints, edgeId, startNode, endNode);
             this.spines.set(edgeId, spine);
+            
+            // Register connection
+            startNode.connectedSpines.push(edgeId);
+            // We don't push to endNode because this spine flows AWAY from startNode.
+            // endNode will have its own outgoing spine created when we iterate over *its* adj list.
         });
     });
     
-    // Inject Mock Pods
+    // Inject Mock Pods: REMOVED
+    // We now rely on the backend to send pods in updateData()
     this.pods.clear();
     if (this.podLayer) this.podLayer.removeChildren();
-    
-    const spineIds = Array.from(this.spines.keys());
-    spineIds.forEach((sid, idx) => {
-        // Create a few pods per spine for visual busyness
-        if (Math.random() > 0.3) {
-            const mockPod = this.createPod(`mock_${idx}`, { spine_id: sid });
-            mockPod.speed = 1.0 + Math.random() * 2.0;
-            this.pods.set(mockPod.id, mockPod);
-        }
-    });
 
     this.centerView();
     this.drawSpines();
@@ -479,7 +538,7 @@ class NetworkVisualizer {
       }
     }
 
-    return { id, startNode, endNode, segments, totalLength };
+    return { id, startNodeId: startNode.id, endNodeId: endNode.id, segments, totalLength };
   }
 
   /**
@@ -550,14 +609,14 @@ class NetworkVisualizer {
     
     offsets.forEach(offset => {
         // 1. Layered Glows
-        this.config.tube.glowWidths.forEach((width, idx) => {
-            this.spineLayer!.lineStyle(width, this.config.tube.glowColor, this.config.tube.glowAlphas[idx]);
-            this.drawLayeredPath(spine, offset);
-        });
+        // this.config.tube.glowWidths.forEach((width, idx) => {
+        //     this.spineLayer!.lineStyle(width, this.config.tube.glowColor, this.config.tube.glowAlphas[idx]);
+        //     this.drawLayeredPath(spine, offset);
+        // });
 
-        // 2. Core Brilliant Line
-        this.spineLayer.lineStyle(this.config.tube.width, 0xffffff, 0.9);
-        this.drawLayeredPath(spine, offset);
+        // // 2. Core Brilliant Line
+        // this.spineLayer.lineStyle(this.config.tube.width, 0xffffff, 0.9);
+        // this.drawLayeredPath(spine, offset);
 
         // 3. Primary Color Inner Line
         this.spineLayer.lineStyle(this.config.tube.width - 1, color, 1);

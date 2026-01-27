@@ -3,7 +3,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 import logging
-
+import sys
 from .model import (
     Event, PodStatusUpdate, PodDecision, DecisionContext, Decision,
     Passenger, Cargo, Priority, PodStatus, Route
@@ -13,6 +13,14 @@ from .routing import OfflineRouter
 from .ai_provider import AIProvider, AIProviderFactory, MockAIProvider
 
 
+logging.basicConfig(
+    level=logging.WARN,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('aexis_core.pod.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 

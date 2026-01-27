@@ -1,8 +1,11 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict, List, Optional
 import logging
 import asyncio
+
+from aexis.core import load_network_data
 
 from ..core.system import AexisSystem
 from ..core.errors import handle_exception
@@ -127,7 +130,26 @@ class SystemAPI:
             except Exception as e:
                 error_details = handle_exception(e, "SystemAPI")
                 raise HTTPException(status_code=500, detail=error_details.message)
+
+        @self.app.get("/api/network")
+        async def get_network():
+            """Get network topology data"""
+            try:
+                data = self.get_network_data()
+                if data is None:
+                    raise HTTPException(status_code=404, detail="Network data not found")
+                return data
+            except HTTPException:
+                raise
+            except Exception as e:
+                error_details = handle_exception(e, "SystemAPI")
+                raise HTTPException(status_code=500, detail=error_details.message)
     
+    def get_network_data(self) -> Dict | None:
+        path = os.getenv('AEXIS_NETWORK_DATA', 'aexis/network.json')
+        return load_network_data(path)
+
+
     def get_app(self) -> FastAPI:
         """Get FastAPI application instance"""
         return self.app

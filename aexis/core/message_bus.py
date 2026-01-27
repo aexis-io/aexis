@@ -1,7 +1,7 @@
 import json
 import asyncio
 from typing import Dict, List, Callable, Any, Optional
-from datetime import datetime
+import sys
 import redis.asyncio as redis
 from redis.asyncio import Redis
 import logging
@@ -10,6 +10,14 @@ from .model import Event, Command
 from .errors import create_error, ErrorCode, handle_exception
 
 
+logging.basicConfig(
+    level=logging.WARN,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('aexis_core.messageing.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 
