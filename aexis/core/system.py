@@ -440,7 +440,7 @@ class AexisSystem:
                 MessageBus.get_event_channel(event.event_type),
                 event
              )
-             logger.info(f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
+             print(f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
     
     def get_station_state(self, station_id: str) -> Optional[Dict]:
         """Get specific station state"""

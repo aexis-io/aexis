@@ -94,6 +94,17 @@ interface NetworkData {
   nodes: NetworkNode[];
 }
 
+/**
+ * Visual indicator for payload at a station
+ */
+interface StationPayload {
+  id: string;
+  stationId: string;
+  type: 'passenger' | 'cargo';
+  gfx: PIXI.Graphics;
+  createdAt: number;
+}
+
 class NetworkVisualizer {
   canvas: HTMLElement | null;
   app: PIXI.Application | null;
@@ -108,6 +119,8 @@ class NetworkVisualizer {
   spines: Map<string, PathSpine>;
   nodes: Map<string, Node>;
   pods: Map<string, Pod>;
+  stationPayloads: Map<string, StationPayload>;
+  indicatorLayer: PIXI.Container | null;
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId);
@@ -144,6 +157,7 @@ class NetworkVisualizer {
     this.spines = new Map();
     this.nodes = new Map();
     this.pods = new Map();
+    this.stationPayloads = new Map();
  
     // Layers
     this.viewport = null;
@@ -151,6 +165,7 @@ class NetworkVisualizer {
     this.spineLayer = null;
     this.nodeLayer = null;
     this.podLayer = null;
+    this.indicatorLayer = null;
 
     this.init();
   }
@@ -179,6 +194,9 @@ class NetworkVisualizer {
 
     this.podLayer = new PIXI.Container();
     this.viewport.addChild(this.podLayer);
+
+    this.indicatorLayer = new PIXI.Container();
+    this.viewport.addChild(this.indicatorLayer);
 
     // Interaction
     this.setupInteraction();
@@ -298,6 +316,75 @@ class NetworkVisualizer {
   updateData(data: Record<string, unknown>): void {
     if ((data as any).pods) {
         this.syncPods((data as any).pods);
+    }
+  }
+
+  /**
+   * Handle real-time events from WebSocket
+   */
+  handleEvent(channel: string, eventData: any): void {
+    const eventType = eventData.event_type || '';
+
+    console.log('inbound event : ', eventType)
+    
+    // Payload arrival at station
+    if (eventType.includes('PassengerArrival')) {
+        this.addStationPayload(eventData.station_id || eventData.origin, 'passenger', eventData.passenger_id || eventData.event_id);
+    } else if (eventType.includes('CargoRequest')) {
+        console.log('Adding new arriving cargo')
+        this.addStationPayload(eventData.station_id || eventData.origin, 'cargo', eventData.cargo_id || eventData.event_id);
+    }
+    
+    // Payload loaded onto pod (departure)
+    if (eventType.includes('passenger') && eventType.includes('loaded')) {
+        this.removeStationPayload(eventData.passenger_id || eventData.event_id);
+    } else if (eventType.includes('cargo') && eventType.includes('loaded')) {
+        this.removeStationPayload(eventData.cargo_id || eventData.event_id);
+    }
+  }
+
+  addStationPayload(stationId: string, type: 'passenger' | 'cargo', payloadId: string): void {
+    // Extract node ID from station ID (station_1 -> 1)
+    const nodeId = stationId.replace('station_', '');
+    const node = this.nodes.get(nodeId);
+    if (!node || !this.indicatorLayer) return;
+
+    // Create visual indicator
+    const gfx = new PIXI.Graphics();
+    const color = type === 'passenger' ? 0xffff00 : 0xaa00ff; // Yellow for passenger, purple for cargo
+    
+    // Small circle offset from station center
+    const existingCount = Array.from(this.stationPayloads.values()).filter(p => p.stationId === stationId).length;
+    const angle = (existingCount * 0.5) + Math.random() * 0.3;
+    const radius = 20 + existingCount * 3;
+    const offsetX = Math.cos(angle) * radius;
+    const offsetY = Math.sin(angle) * radius;
+    
+    gfx.beginFill(color, 0.8);
+    gfx.drawCircle(0, 0, 5);
+    gfx.endFill();
+    
+    gfx.beginFill(0xffffff, 1);
+    gfx.drawCircle(0, 0, 2);
+    gfx.endFill();
+    
+    gfx.position.set(node.x + offsetX, node.y + offsetY);
+    this.indicatorLayer.addChild(gfx);
+    
+    this.stationPayloads.set(payloadId, {
+        id: payloadId,
+        stationId,
+        type,
+        gfx,
+        createdAt: Date.now()
+    });
+  }
+
+  removeStationPayload(payloadId: string): void {
+    const payload = this.stationPayloads.get(payloadId);
+    if (payload) {
+        payload.gfx.destroy();
+        this.stationPayloads.delete(payloadId);
     }
   }
 

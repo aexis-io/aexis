@@ -123,8 +123,8 @@ class MessageBus:
             }
 
             await self.redis_client.publish(channel, json.dumps(message))
-            print(f"DEBUG: Published {event.event_type} to {channel}")
-            logger.debug(f"Published {event.event_type} to {channel}")
+            # print(f"DEBUG: Published {event.event_type} to {channel}")
+            # logger.debug(f"Published {event.event_type} to {channel}")
             return True
 
         except redis.ConnectionError as e:

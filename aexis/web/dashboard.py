@@ -8,6 +8,7 @@ import logging
 from typing import Dict, List, Optional
 import os
 import httpx
+import redis.asyncio as redis
 
 
 logger = logging.getLogger(__name__)
@@ -192,11 +193,84 @@ class WebDashboard:
             except:
                 pass
 
+    async def start_redis_listener(self):
+        """Subscribe to Redis channels and forward events to WebSocket clients"""
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+        redis_password = os.getenv('REDIS_PASSWORD')
+        
+        self._redis_running = True
+        redis_client = None
+        pubsub = None
+        
+        try:
+            redis_client = redis.from_url(
+                redis_url,
+                password=redis_password,
+                decode_responses=True
+            )
+            await redis_client.ping()
+            logger.info("Dashboard connected to Redis for event forwarding")
+            
+            pubsub = redis_client.pubsub()
+            
+            # Subscribe to event channels
+            channels = [
+                'aexis:events:passenger',
+                'aexis:events:cargo',
+                'aexis:events:pods',
+                'aexis:events:system'
+            ]
+            
+            for channel in channels:
+                await pubsub.subscribe(channel)
+                logger.info(f"Dashboard subscribed to {channel}")
+            
+            # Listen and forward
+            while self._redis_running:
+                try:
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        timeout=2.0
+                    )
+                    if message and message['type'] == 'message':
+                        try:
+                            data = json.loads(message['data'])
+                            await self.broadcast({
+                                "type": "event",
+                                "channel": message['channel'],
+                                "data": data.get('message', data)
+                            })
+                        except json.JSONDecodeError:
+                            pass
+                except asyncio.TimeoutError:
+                    continue
+                        
+        except Exception as e:
+            logger.error(f"Redis listener error: {e}")
+        finally:
+            # Cleanup
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe()
+                    await pubsub.aclose()
+                except:
+                    pass
+            if redis_client:
+                try:
+                    await redis_client.aclose()
+                except:
+                    pass
+
     def get_app(self) -> FastAPI:
         """Get FastAPI application instance"""
-        # Start background poller on startup
+        # Start background tasks on startup
         @self.app.on_event("startup")
         async def startup_event():
             asyncio.create_task(self.start_background_poller())
+            asyncio.create_task(self.start_redis_listener())
+        
+        @self.app.on_event("shutdown")
+        async def shutdown_event():
+            self._redis_running = False
             
         return self.app

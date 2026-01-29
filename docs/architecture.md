@@ -84,3 +84,24 @@ Event → Redis Message Bus → Multiple Handlers → Gemini 3 Decisions → Act
 - Graceful degradation for Gemini 3 failures
 - Circuit breakers for external dependencies
 - Automatic retry with exponential backoff
+
+
+
+                       ┌──────────────┐
+                       │  AexisSystem │ (Single Instance)
+                       └──────┬───────┘
+              ┌───────────────┼───────────────┐
+              │               │               │
+              ▼               ▼               ▼
+       ┌──────────┐    ┌──────────┐    ┌──────────┐
+       │   CLI    │    │   API    │    │Dashboard │
+       │(console) │    │ (routes) │    │  (web)   │
+       └──────────┘    └────┬─────┘    └────┬─────┘
+                            │               │
+                            │  Redis PubSub │
+                            └───────┬───────┘
+                                    ▼
+                             ┌──────────────┐
+                             │  Visualizer  │  (WebSocket)
+                             │     (TS)     │
+                             └──────────────┘

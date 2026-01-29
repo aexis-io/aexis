@@ -246,6 +246,16 @@ function handleMessage(payload: WebSocketMessage): void {
       updateMetrics(payload.data as unknown as UpdateMetricsPayload);
       break;
 
+    case 'event':
+      // Forward real-time events to visualizer
+      if (visualizer && payload.data) {
+        const channel = (payload as any).channel || '';
+        console.log("channel: ", channel)
+        console.log('event_payload: ', payload)
+        visualizer.handleEvent(channel, payload.data);
+      }
+      break;
+
     case 'pod_decision':
       if (payload.data) {
         logEvent(
