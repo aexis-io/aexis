@@ -2,7 +2,7 @@
 name = "aexis"
 version = "0.1.0"
 description = "Add your description here"
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=1.57.0",
@@ -23,9 +23,20 @@ dev = [
     "pytest==8.4.1",
     "pytest-asyncio>=0.23.0",
     "hypothesis>=6.92.0",
+    "ruff>=0.14.14",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["aexis/tests"]
+
+
+[tool.setuptools.packages.find]
+include = ["cli*", "web*", "api*", "core*"]
+
+[tool.ruff]
+line-length = 88
+lint.select = ["E", "F", "W", "I", "B", "UP"]  # Common flake8 rules
+lint.ignore = []  # Customize
+lint.fixable = ["ALL"]  # Enable all safe fixes

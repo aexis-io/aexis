@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import Any, Optional
 from uuid import uuid4
 
 
@@ -34,7 +34,7 @@ class Event:
     event_type: str = ""
     timestamp: datetime = field(default_factory=datetime.utcnow)
     source: str = ""
-    data: Dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -45,7 +45,7 @@ class PassengerArrival(Event):
     destination: str = ""
     priority: int = Priority.NORMAL.value
     group_size: int = 1
-    special_needs: List[str] = field(default_factory=list)
+    special_needs: list[str] = field(default_factory=list)
     wait_time_limit: int = 30  # minutes
 
 
@@ -80,7 +80,7 @@ class CargoRequest(Event):
     priority: int = Priority.NORMAL.value
     hazardous: bool = False
     temperature_controlled: bool = False
-    deadline: Optional[datetime] = None
+    deadline: datetime | None = None
 
 
 @dataclass
@@ -110,11 +110,11 @@ class PodStatusUpdate(Event):
     location: str = ""
     status: PodStatus = PodStatus.IDLE
     capacity_used: int = 0
-    capacity_total: int = 10
+    capacity_total: int = 0  # Reverted to generic name, value depends on pod type
     weight_used: float = 0.0
-    weight_total: float = 500.0
-    battery_level: float = 1.0
-    current_route: List[str] = field(default_factory=list)
+    weight_total: float = 0.0
+    # battery_level removed
+    current_route: Optional["Route"] = None
 
 
 @dataclass
@@ -122,10 +122,10 @@ class PodDecision(Event):
     event_type: str = "PodDecision"
     pod_id: str = ""
     decision_type: str = ""
-    decision: Dict[str, Any] = field(default_factory=dict)
+    decision: dict[str, Any] = field(default_factory=dict)
     reasoning: str = ""
     confidence: float = 0.0
-    gemini_response_id: Optional[str] = None
+    gemini_response_id: str | None = None
     fallback_used: bool = False
 
 
@@ -136,8 +136,8 @@ class CongestionAlert(Event):
     congestion_level: float = 0.0  # 0.0-1.0
     queue_length: int = 0
     average_wait_time: float = 0.0
-    affected_routes: List[str] = field(default_factory=list)
-    estimated_clear_time: Optional[datetime] = None
+    affected_routes: list[str] = field(default_factory=list)
+    estimated_clear_time: datetime | None = None
     severity: str = "low"
 
 
@@ -145,8 +145,9 @@ class CongestionAlert(Event):
 class SystemSnapshot(Event):
     event_type: str = "SystemSnapshot"
     snapshot_id: str = field(
-        default_factory=lambda: f"snap_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}")
-    system_state: Dict[str, Any] = field(default_factory=dict)
+        default_factory=lambda: f"snap_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}"
+    )
+    system_state: dict[str, Any] = field(default_factory=dict)
 
 
 # Command Events
@@ -155,16 +156,16 @@ class Command(Event):
     command_id: str = field(default_factory=lambda: str(uuid4()))
     command_type: str = ""
     target: str = ""
-    parameters: Dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class AssignRoute(Command):
     command_type: str = "AssignRoute"
     target_pod: str = ""
-    route: List[str] = field(default_factory=list)
+    route: list[str] = field(default_factory=list)
     priority: int = Priority.NORMAL.value
-    deadline: Optional[datetime] = None
+    deadline: datetime | None = None
 
 
 @dataclass
@@ -183,12 +184,12 @@ class Passenger:
     destination: str
     priority: Priority
     group_size: int = 1
-    special_needs: List[str] = field(default_factory=list)
+    special_needs: list[str] = field(default_factory=list)
     arrival_time: datetime = field(default_factory=datetime.utcnow)
     wait_time_limit: int = 30
-    pickup_time: Optional[datetime] = None
-    delivery_time: Optional[datetime] = None
-    assigned_pod: Optional[str] = None
+    pickup_time: datetime | None = None
+    delivery_time: datetime | None = None
+    assigned_pod: str | None = None
 
 
 @dataclass
@@ -201,17 +202,17 @@ class Cargo:
     priority: Priority
     hazardous: bool = False
     temperature_controlled: bool = False
-    deadline: Optional[datetime] = None
+    deadline: datetime | None = None
     arrival_time: datetime = field(default_factory=datetime.utcnow)
-    load_time: Optional[datetime] = None
-    delivery_time: Optional[datetime] = None
-    assigned_pod: Optional[str] = None
+    load_time: datetime | None = None
+    delivery_time: datetime | None = None
+    assigned_pod: str | None = None
 
 
 @dataclass
 class Route:
     route_id: str
-    stations: List[str]
+    stations: list[str]
     estimated_duration: int = 0  # minutes
     distance: float = 0.0
     traffic_level: float = 0.0  # 0.0-1.0
@@ -222,21 +223,21 @@ class Route:
 class DecisionContext:
     pod_id: str
     current_location: str
-    current_route: List[str]
+    current_route: Optional["Route"]
     capacity_available: int
     weight_available: float
-    battery_level: float
-    available_requests: List[Dict[str, Any]]
-    network_state: Dict[str, Any]
-    system_metrics: Dict[str, Any]
+    # battery_level removed
+    available_requests: list[dict[str, Any]]
+    network_state: dict[str, Any]
+    system_metrics: dict[str, Any]
 
 
 @dataclass
 class Decision:
     decision_type: str
-    accepted_requests: List[str]
-    rejected_requests: List[str]
-    route: List[str]
+    accepted_requests: list[str]
+    rejected_requests: list[str]
+    route: list[str]
     estimated_duration: int
     confidence: float
     reasoning: str
@@ -250,4 +251,4 @@ class DecisionOutcome:
     efficiency_score: float
     passenger_satisfaction: float
     cargo_on_time_rate: float
-    lessons_learned: List[str] = field(default_factory=list)
+    lessons_learned: list[str] = field(default_factory=list)

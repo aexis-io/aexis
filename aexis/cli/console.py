@@ -1,7 +1,7 @@
 """AEXIS Command-Line Interface (CLI)
 
 Provides an interactive command-line interface for managing the AEXIS
-autonomous transportation system via its REST API. Users can control the system, 
+autonomous transportation system via its REST API. Users can control the system,
 monitor metrics, and inject manual requests.
 
 Design:
@@ -11,31 +11,31 @@ Design:
 """
 
 import cmd
-import sys
-import os
-import logging
 import json
-from typing import Optional, Dict, Any
+import logging
+import os
+import sys
+from typing import Any
+
 import httpx
 from tabulate import tabulate
-
 
 # Configure logging
 logging.basicConfig(
     level=logging.WARN,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 
 
 class APIClient:
     """Synchronous API Client for AEXIS System"""
-    
+
     def __init__(self, base_url: str = "http://localhost:8001"):
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.client = httpx.Client(timeout=5.0)
-        
+
     def check_health(self) -> bool:
         """Check if API is reachable"""
         try:
@@ -44,19 +44,19 @@ class APIClient:
         except:
             return False
 
-    def get_system_state(self) -> Dict[str, Any]:
+    def get_system_state(self) -> dict[str, Any]:
         """Get full system state"""
         resp = self.client.get(f"{self.base_url}/api/system/status")
         resp.raise_for_status()
         return resp.json()
 
-    def get_all_pods(self) -> Dict[str, Any]:
+    def get_all_pods(self) -> dict[str, Any]:
         """Get all pods"""
         resp = self.client.get(f"{self.base_url}/api/pods")
         resp.raise_for_status()
         return resp.json()
 
-    def get_pod_state(self, pod_id: str) -> Optional[Dict[str, Any]]:
+    def get_pod_state(self, pod_id: str) -> dict[str, Any] | None:
         """Get specific pod state"""
         try:
             resp = self.client.get(f"{self.base_url}/api/pods/{pod_id}")
@@ -67,13 +67,13 @@ class APIClient:
         except httpx.HTTPStatusError:
             return None
 
-    def get_all_stations(self) -> Dict[str, Any]:
+    def get_all_stations(self) -> dict[str, Any]:
         """Get all stations"""
         resp = self.client.get(f"{self.base_url}/api/stations")
         resp.raise_for_status()
         return resp.json()
 
-    def get_station_state(self, station_id: str) -> Optional[Dict[str, Any]]:
+    def get_station_state(self, station_id: str) -> dict[str, Any] | None:
         """Get specific station state"""
         try:
             resp = self.client.get(f"{self.base_url}/api/stations/{station_id}")
@@ -102,7 +102,7 @@ class APIClient:
 class AexisCLI(cmd.Cmd):
     """Interactive CLI for AEXIS system management"""
 
-    prompt = 'aexis> '
+    prompt = "aexis> "
     intro = (
         "\n"
         "╔════════════════════════════════════════════════════════════╗\n"
@@ -122,7 +122,7 @@ class AexisCLI(cmd.Cmd):
         """Configure logging for CLI operations"""
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
     def _check_connection(self) -> bool:
@@ -155,7 +155,7 @@ class AexisCLI(cmd.Cmd):
             state = self.client.get_system_state()
 
             # Format system info
-            uptime = int(state.get('uptime_seconds', 0))
+            uptime = int(state.get("uptime_seconds", 0))
             uptime_fmt = f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s"
 
             print("\n" + "=" * 60)
@@ -163,29 +163,33 @@ class AexisCLI(cmd.Cmd):
             print("=" * 60)
 
             system_info = [
-                ["System ID", state.get('system_id', 'Unknown')],
-                ["Status", "🟢 RUNNING" if state.get('running') else "🔴 STOPPED"],
+                ["System ID", state.get("system_id", "Unknown")],
+                ["Status", "🟢 RUNNING" if state.get("running") else "🔴 STOPPED"],
                 ["Uptime", uptime_fmt],
-                ["Timestamp", state.get('timestamp', '')],
+                ["Timestamp", state.get("timestamp", "")],
             ]
-            print(tabulate(system_info, tablefmt='plain'))
+            print(tabulate(system_info, tablefmt="plain"))
 
             # Metrics table
-            metrics = state.get('metrics', {})
+            metrics = state.get("metrics", {})
             print("\nMetrics:")
             metrics_data = [
-                ["Active Pods",
-                    f"{metrics.get('active_pods', 0)}/{metrics.get('total_pods', 0)}"],
-                ["Operational Stations",
-                    f"{metrics.get('operational_stations', 0)}/{metrics.get('total_stations', 0)}"],
-                ["Pending Passengers", metrics.get('pending_passengers', 0)],
-                ["Pending Cargo", metrics.get('pending_cargo', 0)],
+                [
+                    "Active Pods",
+                    f"{metrics.get('active_pods', 0)}/{metrics.get('total_pods', 0)}",
+                ],
+                [
+                    "Operational Stations",
+                    f"{metrics.get('operational_stations', 0)}/{metrics.get('total_stations', 0)}",
+                ],
+                ["Pending Passengers", metrics.get("pending_passengers", 0)],
+                ["Pending Cargo", metrics.get("pending_cargo", 0)],
                 ["System Efficiency", f"{metrics.get('system_efficiency', 0):.1%}"],
                 ["Avg Wait Time", f"{metrics.get('average_wait_time', 0):.1f}s"],
                 ["Throughput/Hour", f"{metrics.get('throughput_per_hour', 0):.0f}"],
                 ["Fallback Rate", f"{metrics.get('fallback_usage_rate', 0):.1%}"],
             ]
-            print(tabulate(metrics_data, tablefmt='simple'))
+            print(tabulate(metrics_data, tablefmt="simple"))
             print()
 
         except Exception as e:
@@ -219,19 +223,30 @@ class AexisCLI(cmd.Cmd):
                 # Sort by ID
                 for pod_id in sorted(pods.keys()):
                     state = pods[pod_id]
-                    pods_data.append([
-                        pod_id,
-                        state.get('status', 'unknown'),
-                        state.get('current_spine', 'N/A'),
-                        f"{state.get('distance', 0):.1f}",
-                        state.get('load_type', 'empty'),
-                    ])
+                    pods_data.append(
+                        [
+                            pod_id,
+                            state.get("status", "unknown"),
+                            state.get("current_spine", "N/A"),
+                            f"{state.get('distance', 0):.1f}",
+                            state.get("load_type", "empty"),
+                        ]
+                    )
 
                 print("\nPods:")
-                print(tabulate(pods_data,
-                               headers=['Pod ID', 'Status',
-                                        'Current Spine', 'Distance', 'Load'],
-                               tablefmt='simple'))
+                print(
+                    tabulate(
+                        pods_data,
+                        headers=[
+                            "Pod ID",
+                            "Status",
+                            "Current Spine",
+                            "Distance",
+                            "Load",
+                        ],
+                        tablefmt="simple",
+                    )
+                )
                 print()
 
         except Exception as e:
@@ -264,19 +279,30 @@ class AexisCLI(cmd.Cmd):
                 stations_data = []
                 for station_id in sorted(stations.keys()):
                     state = stations[station_id]
-                    stations_data.append([
-                        station_id,
-                        state.get('status', 'unknown'),
-                        len(state.get('passenger_queue', [])),
-                        len(state.get('cargo_queue', [])),
-                        state.get('avg_wait_time', 0),
-                    ])
+                    stations_data.append(
+                        [
+                            station_id,
+                            state.get("status", "unknown"),
+                            len(state.get("passenger_queue", [])),
+                            len(state.get("cargo_queue", [])),
+                            state.get("avg_wait_time", 0),
+                        ]
+                    )
 
                 print("\nStations:")
-                print(tabulate(stations_data,
-                               headers=['Station ID', 'Status',
-                                        'Passengers', 'Cargo', 'Avg Wait (s)'],
-                               tablefmt='simple'))
+                print(
+                    tabulate(
+                        stations_data,
+                        headers=[
+                            "Station ID",
+                            "Status",
+                            "Passengers",
+                            "Cargo",
+                            "Avg Wait (s)",
+                        ],
+                        tablefmt="simple",
+                    )
+                )
                 print()
 
         except Exception as e:
@@ -300,7 +326,9 @@ class AexisCLI(cmd.Cmd):
 
         try:
             self.client.inject_passenger(origin, destination, count)
-            self._success(f"Injected {count} passenger(s) from {origin} to {destination}")
+            self._success(
+                f"Injected {count} passenger(s) from {origin} to {destination}"
+            )
         except Exception as e:
             self._error(f"Failed to inject passenger request: {str(e)}")
 
@@ -349,7 +377,7 @@ class AexisCLI(cmd.Cmd):
 
     def do_clear(self, args: str) -> None:
         """Clear terminal screen"""
-        os.system('clear' if os.name == 'posix' else 'cls')
+        os.system("clear" if os.name == "posix" else "cls")
 
     def do_quit(self, args: str) -> bool:
         """Exit the CLI"""
@@ -372,23 +400,23 @@ def main():
     """Entry point for CLI"""
     try:
         # Determine API URL from Env or Default
-        api_host = os.getenv('API_HOST', 'localhost')
-        api_port = os.getenv('API_PORT', '8001')
+        api_host = os.getenv("API_HOST", "localhost")
+        api_port = os.getenv("API_PORT", "8001")
         api_url = f"http://{api_host}:{api_port}"
-        
+
         # Initialize Client
         client = APIClient(base_url=api_url)
-        
+
         # Create and run CLI
         cli = AexisCLI(client)
-        
+
         # Initial check
         if not client.check_health():
             print(f"Warning: Could not connect to API at {api_url}")
             print("Ensure the AEXIS system services are running.")
         else:
             print(f"Connected to AEXIS API at {api_url}")
-            
+
         cli.cmdloop()
 
     except KeyboardInterrupt:
@@ -399,5 +427,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

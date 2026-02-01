@@ -1,0 +1,32 @@
+{
+  "config": {
+    "debug": false,
+    "networkDataPath": "network.json",
+    "redis": {
+      "url": "redis://localhost:6379",
+      "password": "your_redis_password_here"
+    },
+    "ai": {
+      "provider": "mock",
+      "gemini": {
+        "api_key": null
+      }
+    },
+    "pods": {
+      "count": 25,
+      "cargoRatio": 0.5
+    },
+    "stations": {
+      "count": 8
+    },
+    "system": {
+      "snapshotInterval": 300,
+      "decisionInterval": 30,
+      "monitoringInterval": 60
+    },
+    "logging": {
+      "level": "INFO",
+      "file": "aexis_core.log"
+    }
+  }
+}

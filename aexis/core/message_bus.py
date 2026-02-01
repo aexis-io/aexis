@@ -1,22 +1,22 @@
-import json
 import asyncio
-from typing import Dict, List, Callable, Any, Optional
+import json
+import logging
 import sys
+from collections.abc import Callable
+
 import redis.asyncio as redis
 from redis.asyncio import Redis
-import logging
 
-from .model import Event, Command
-from .errors import create_error, ErrorCode, handle_exception
-
+from .errors import ErrorCode, create_error, handle_exception
+from .model import Command, Event
 
 logging.basicConfig(
     level=logging.WARN,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('aexis_core.messaging.log')
-    ]
+        logging.FileHandler("aexis_core.messaging.log"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,14 @@ logger = logging.getLogger(__name__)
 class MessageBus:
     """Redis-based message bus for event-driven communication"""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379", password: Optional[str] = None):
+    def __init__(
+        self, redis_url: str = "redis://localhost:6379", password: str | None = None
+    ):
         self.redis_url = redis_url
         self.password = password
-        self.redis_client: Optional[Redis] = None
+        self.redis_client: Redis | None = None
         self.pubsub = None
-        self.subscribers: Dict[str, List[Callable]] = {}
+        self.subscribers: dict[str, list[Callable]] = {}
         self.running = False
 
     async def connect(self) -> bool:
@@ -41,7 +43,7 @@ class MessageBus:
                 decode_responses=True,
                 socket_connect_timeout=10,
                 socket_timeout=5,
-                retry_on_timeout=True
+                retry_on_timeout=True,
             )
 
             # Test connection
@@ -58,7 +60,7 @@ class MessageBus:
             error = create_error(
                 ErrorCode.REDIS_AUTHENTICATION_FAILED,
                 component="MessageBus",
-                context={"redis_url": self.redis_url, "original_error": str(e)}
+                context={"redis_url": self.redis_url, "original_error": str(e)},
             )
             logger.error(error.message)
             return False
@@ -67,7 +69,7 @@ class MessageBus:
             error = create_error(
                 ErrorCode.REDIS_CONNECTION_FAILED,
                 component="MessageBus",
-                context={"redis_url": self.redis_url, "original_error": str(e)}
+                context={"redis_url": self.redis_url, "original_error": str(e)},
             )
             logger.error(error.message)
             return False
@@ -75,7 +77,8 @@ class MessageBus:
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
             logger.error(
-                f"Unexpected error connecting to Redis: {error_details.message}")
+                f"Unexpected error connecting to Redis: {error_details.message}"
+            )
             return False
 
     async def disconnect(self):
@@ -98,7 +101,7 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.REDIS_CONNECTION_FAILED,
                     component="MessageBus",
-                    context={"operation": "publish_event"}
+                    context={"operation": "publish_event"},
                 )
 
             # Validate event
@@ -106,21 +109,21 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.EVENT_VALIDATION_FAILED,
                     component="MessageBus",
-                    context={"event_type": event.event_type,
-                             "event_id": event.event_id}
+                    context={
+                        "event_type": event.event_type,
+                        "event_id": event.event_id,
+                    },
                 )
 
             # Serialize the entire event dataclass, not just event.data
             from dataclasses import asdict
+
             event_dict = asdict(event)
             # Convert datetime to ISO string
-            if 'timestamp' in event_dict:
-                event_dict['timestamp'] = event.timestamp.isoformat()
+            if "timestamp" in event_dict:
+                event_dict["timestamp"] = event.timestamp.isoformat()
 
-            message = {
-                "channel": channel,
-                "message": event_dict
-            }
+            message = {"channel": channel, "message": event_dict}
 
             await self.redis_client.publish(channel, json.dumps(message))
             # print(f"DEBUG: Published {event.event_type} to {channel}")
@@ -131,8 +134,11 @@ class MessageBus:
             error = create_error(
                 ErrorCode.REDIS_PUBLISH_FAILED,
                 component="MessageBus",
-                context={"channel": channel,
-                         "event_type": event.event_type, "original_error": str(e)}
+                context={
+                    "channel": channel,
+                    "event_type": event.event_type,
+                    "original_error": str(e),
+                },
             )
             logger.error(error.message)
             return False
@@ -141,16 +147,14 @@ class MessageBus:
             error = create_error(
                 ErrorCode.EVENT_DATA_INVALID,
                 component="MessageBus",
-                context={"event_type": event.event_type,
-                         "original_error": str(e)}
+                context={"event_type": event.event_type, "original_error": str(e)},
             )
             logger.error(error.message)
             return False
 
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
-            logger.error(
-                f"Unexpected error publishing event: {error_details.message}")
+            logger.error(f"Unexpected error publishing event: {error_details.message}")
             return False
 
     async def publish_command(self, channel: str, command: Command) -> bool:
@@ -160,7 +164,7 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.REDIS_CONNECTION_FAILED,
                     component="MessageBus",
-                    context={"operation": "publish_command"}
+                    context={"operation": "publish_command"},
                 )
 
             # Validate command
@@ -168,8 +172,10 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.EVENT_VALIDATION_FAILED,
                     component="MessageBus",
-                    context={"command_type": command.command_type,
-                             "target": command.target}
+                    context={
+                        "command_type": command.command_type,
+                        "target": command.target,
+                    },
                 )
 
             message = {
@@ -179,8 +185,8 @@ class MessageBus:
                     "command_type": command.command_type,
                     "target": command.target,
                     "timestamp": command.timestamp.isoformat(),
-                    "parameters": command.parameters
-                }
+                    "parameters": command.parameters,
+                },
             }
 
             await self.redis_client.publish(channel, json.dumps(message))
@@ -192,7 +198,10 @@ class MessageBus:
                 ErrorCode.REDIS_PUBLISH_FAILED,
                 component="MessageBus",
                 context={
-                    "channel": channel, "command_type": command.command_type, "original_error": str(e)}
+                    "channel": channel,
+                    "command_type": command.command_type,
+                    "original_error": str(e),
+                },
             )
             logger.error(error.message)
             return False
@@ -201,8 +210,10 @@ class MessageBus:
             error = create_error(
                 ErrorCode.EVENT_DATA_INVALID,
                 component="MessageBus",
-                context={"command_type": command.command_type,
-                         "original_error": str(e)}
+                context={
+                    "command_type": command.command_type,
+                    "original_error": str(e),
+                },
             )
             logger.error(error.message)
             return False
@@ -210,7 +221,8 @@ class MessageBus:
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
             logger.error(
-                f"Unexpected error publishing command: {error_details.message}")
+                f"Unexpected error publishing command: {error_details.message}"
+            )
             return False
 
     def subscribe(self, channel: str, handler: Callable):
@@ -220,8 +232,10 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.EVENT_VALIDATION_FAILED,
                     component="MessageBus",
-                    context={"channel": channel,
-                             "handler_type": type(handler).__name__}
+                    context={
+                        "channel": channel,
+                        "handler_type": type(handler).__name__,
+                    },
                 )
 
             if channel not in self.subscribers:
@@ -229,8 +243,7 @@ class MessageBus:
                 # If already running, we need to subscribe in Redis too
                 if self.running and self.pubsub:
                     asyncio.create_task(self.pubsub.subscribe(channel))
-                    logger.info(
-                        f"Dynamically subscribed to Redis channel: {channel}")
+                    logger.info(f"Dynamically subscribed to Redis channel: {channel}")
 
             self.subscribers[channel].append(handler)
             logger.debug(f"Subscribed handler to {channel}")
@@ -238,7 +251,8 @@ class MessageBus:
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
             logger.error(
-                f"Error subscribing to channel {channel}: {error_details.message}")
+                f"Error subscribing to channel {channel}: {error_details.message}"
+            )
 
     def unsubscribe(self, channel: str, handler: Callable):
         """Unsubscribe handler from channel"""
@@ -249,11 +263,13 @@ class MessageBus:
                     logger.debug(f"Unsubscribed handler from {channel}")
                 except ValueError:
                     logger.warning(
-                        f"Handler not found in channel {channel} subscribers")
+                        f"Handler not found in channel {channel} subscribers"
+                    )
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
             logger.error(
-                f"Error unsubscribing from channel {channel}: {error_details.message}")
+                f"Error unsubscribing from channel {channel}: {error_details.message}"
+            )
 
     async def start_listening(self):
         """Start listening for subscribed channels"""
@@ -262,7 +278,7 @@ class MessageBus:
                 raise create_error(
                     ErrorCode.REDIS_CONNECTION_FAILED,
                     component="MessageBus",
-                    context={"operation": "start_listening"}
+                    context={"operation": "start_listening"},
                 )
 
             # Subscribe to all channels
@@ -274,7 +290,7 @@ class MessageBus:
                     error = create_error(
                         ErrorCode.REDIS_SUBSCRIBE_FAILED,
                         component="MessageBus",
-                        context={"channel": channel, "original_error": str(e)}
+                        context={"channel": channel, "original_error": str(e)},
                     )
                     logger.error(error.message)
                     continue
@@ -288,36 +304,33 @@ class MessageBus:
                     print("Message listener stopped (not running)")
                     break
 
-                if message['type'] == 'message':
-                    print(
-                        f"DEBUG: Received Redis message on {message['channel']}")
+                if message["type"] == "message":
+                    print(f"DEBUG: Received Redis message on {message['channel']}")
                     await self._handle_message(message)
 
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
-            logger.error(
-                f"Error in message listening loop: {error_details.message}")
+            logger.error(f"Error in message listening loop: {error_details.message}")
             self.running = False
 
     async def _handle_message(self, message):
         """Handle incoming Redis message"""
         try:
-            channel = message['channel']
+            channel = message["channel"]
 
             # Validate channel has subscribers
             if channel not in self.subscribers:
-                logger.warning(
-                    f"Received message on unsubscribed channel: {channel}")
+                logger.warning(f"Received message on unsubscribed channel: {channel}")
                 return
 
             # Parse message data
             try:
-                data = json.loads(message['data'])
+                data = json.loads(message["data"])
             except json.JSONDecodeError as e:
                 error = create_error(
                     ErrorCode.EVENT_DATA_INVALID,
                     component="MessageBus",
-                    context={"channel": channel, "original_error": str(e)}
+                    context={"channel": channel, "original_error": str(e)},
                 )
                 logger.error(error.message)
                 return
@@ -331,8 +344,7 @@ class MessageBus:
                         handler(data)
                 except Exception as e:
                     error_details = handle_exception(e, f"Handler-{channel}")
-                    logger.error(
-                        f"Handler error on {channel}: {error_details.message}")
+                    logger.error(f"Handler error on {channel}: {error_details.message}")
 
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
@@ -348,54 +360,51 @@ class MessageBus:
             logger.info("Stopped listening to Redis channels")
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
-            logger.error(
-                f"Error stopping message listening: {error_details.message}")
+            logger.error(f"Error stopping message listening: {error_details.message}")
 
     # Channel constants
     CHANNELS = {
-        'PASSENGER_EVENTS': 'aexis:events:passenger',
-        'CARGO_EVENTS': 'aexis:events:cargo',
-        'POD_EVENTS': 'aexis:events:pods',
-        'SYSTEM_EVENTS': 'aexis:events:system',
-        'CONGESTION_EVENTS': 'aexis:events:congestion',
-        'POD_COMMANDS': 'aexis:commands:pods',
-        'STATION_COMMANDS': 'aexis:commands:stations',
-        'SYSTEM_COMMANDS': 'aexis:commands:system',
+        "PASSENGER_EVENTS": "aexis:events:passenger",
+        "CARGO_EVENTS": "aexis:events:cargo",
+        "POD_EVENTS": "aexis:events:pods",
+        "SYSTEM_EVENTS": "aexis:events:system",
+        "CONGESTION_EVENTS": "aexis:events:congestion",
+        "POD_COMMANDS": "aexis:commands:pods",
+        "STATION_COMMANDS": "aexis:commands:stations",
+        "SYSTEM_COMMANDS": "aexis:commands:system",
     }
 
     @classmethod
     def get_event_channel(cls, event_type: str) -> str:
         """Get appropriate channel for event type"""
         try:
-            if 'passenger' in event_type.lower():
-                return cls.CHANNELS['PASSENGER_EVENTS']
-            elif 'cargo' in event_type.lower():
-                return cls.CHANNELS['CARGO_EVENTS']
-            elif 'pod' in event_type.lower():
-                return cls.CHANNELS['POD_EVENTS']
-            elif 'congestion' in event_type.lower():
-                return cls.CHANNELS['CONGESTION_EVENTS']
+            if "passenger" in event_type.lower():
+                return cls.CHANNELS["PASSENGER_EVENTS"]
+            elif "cargo" in event_type.lower():
+                return cls.CHANNELS["CARGO_EVENTS"]
+            elif "pod" in event_type.lower():
+                return cls.CHANNELS["POD_EVENTS"]
+            elif "congestion" in event_type.lower():
+                return cls.CHANNELS["CONGESTION_EVENTS"]
             else:
-                return cls.CHANNELS['SYSTEM_EVENTS']
+                return cls.CHANNELS["SYSTEM_EVENTS"]
         except Exception as e:
-            logger.error(
-                f"Error determining event channel for {event_type}: {e}")
-            return cls.CHANNELS['SYSTEM_EVENTS']
+            logger.error(f"Error determining event channel for {event_type}: {e}")
+            return cls.CHANNELS["SYSTEM_EVENTS"]
 
     @classmethod
     def get_command_channel(cls, command_type: str, target_type: str) -> str:
         """Get appropriate channel for command type"""
         try:
-            if target_type == 'pod':
-                return cls.CHANNELS['POD_COMMANDS']
-            elif target_type == 'station':
-                return cls.CHANNELS['STATION_COMMANDS']
+            if target_type == "pod":
+                return cls.CHANNELS["POD_COMMANDS"]
+            elif target_type == "station":
+                return cls.CHANNELS["STATION_COMMANDS"]
             else:
-                return cls.CHANNELS['SYSTEM_COMMANDS']
+                return cls.CHANNELS["SYSTEM_COMMANDS"]
         except Exception as e:
-            logger.error(
-                f"Error determining command channel for {command_type}: {e}")
-            return cls.CHANNELS['SYSTEM_COMMANDS']
+            logger.error(f"Error determining command channel for {command_type}: {e}")
+            return cls.CHANNELS["SYSTEM_COMMANDS"]
 
 
 class EventProcessor:
@@ -414,8 +423,7 @@ class EventProcessor:
             logger.info(f"Started event processor for {self.component_id}")
         except Exception as e:
             error_details = handle_exception(e, self.component_id)
-            logger.error(
-                f"Failed to start event processor: {error_details.message}")
+            logger.error(f"Failed to start event processor: {error_details.message}")
             raise
 
     async def stop(self):
@@ -426,8 +434,7 @@ class EventProcessor:
             logger.info(f"Stopped event processor for {self.component_id}")
         except Exception as e:
             error_details = handle_exception(e, self.component_id)
-            logger.error(
-                f"Failed to stop event processor: {error_details.message}")
+            logger.error(f"Failed to stop event processor: {error_details.message}")
 
     async def _setup_subscriptions(self):
         """Override to setup channel subscriptions"""
@@ -452,8 +459,7 @@ class EventProcessor:
         """Publish command"""
         try:
             channel = MessageBus.get_command_channel(
-                command.command_type,
-                self._get_target_type(command.target)
+                command.command_type, self._get_target_type(command.target)
             )
             await self.message_bus.publish_command(channel, command)
         except Exception as e:
@@ -464,12 +470,12 @@ class EventProcessor:
     def _get_target_type(self, target: str) -> str:
         """Determine target type from ID"""
         try:
-            if target.startswith('pod_'):
-                return 'pod'
-            elif target.startswith('station_'):
-                return 'station'
+            if target.startswith("pod_"):
+                return "pod"
+            elif target.startswith("station_"):
+                return "station"
             else:
-                return 'system'
+                return "system"
         except Exception as e:
             logger.error(f"Error determining target type for {target}: {e}")
-            return 'system'
+            return "system"

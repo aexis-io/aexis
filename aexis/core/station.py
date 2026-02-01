@@ -1,15 +1,16 @@
 import asyncio
-import random
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
 import logging
+import random
+from datetime import datetime, timedelta
 
+from .message_bus import EventProcessor, MessageBus
 from .model import (
-    Event, PassengerArrival, CargoRequest, CongestionAlert, SystemSnapshot,
-    StationStatus, Priority
+    CargoRequest,
+    CongestionAlert,
+    PassengerArrival,
+    Priority,
+    StationStatus,
 )
-from .message_bus import MessageBus, EventProcessor
-
 
 logger = logging.getLogger(__name__)
 
@@ -39,176 +40,170 @@ class Station(EventProcessor):
     async def _setup_subscriptions(self):
         """Subscribe to relevant channels"""
         self.message_bus.subscribe(
-            MessageBus.CHANNELS['PASSENGER_EVENTS'],
-            self._handle_passenger_event
+            MessageBus.CHANNELS["PASSENGER_EVENTS"], self._handle_passenger_event
         )
         self.message_bus.subscribe(
-            MessageBus.CHANNELS['CARGO_EVENTS'],
-            self._handle_cargo_event
+            MessageBus.CHANNELS["CARGO_EVENTS"], self._handle_cargo_event
         )
         self.message_bus.subscribe(
-            MessageBus.CHANNELS['SYSTEM_COMMANDS'],
-            self._handle_system_command
+            MessageBus.CHANNELS["SYSTEM_COMMANDS"], self._handle_system_command
         )
 
     async def _cleanup_subscriptions(self):
         """Unsubscribe from channels"""
         self.message_bus.unsubscribe(
-            MessageBus.CHANNELS['PASSENGER_EVENTS'],
-            self._handle_passenger_event
+            MessageBus.CHANNELS["PASSENGER_EVENTS"], self._handle_passenger_event
         )
         self.message_bus.unsubscribe(
-            MessageBus.CHANNELS['CARGO_EVENTS'],
-            self._handle_cargo_event
+            MessageBus.CHANNELS["CARGO_EVENTS"], self._handle_cargo_event
         )
         self.message_bus.unsubscribe(
-            MessageBus.CHANNELS['SYSTEM_COMMANDS'],
-            self._handle_system_command
+            MessageBus.CHANNELS["SYSTEM_COMMANDS"], self._handle_system_command
         )
 
-    async def _handle_passenger_event(self, data: Dict):
+    async def _handle_passenger_event(self, data: dict):
         """Handle passenger-related events"""
         try:
-            event_type = data.get('message', {}).get('event_type', '')
-            event_data = data.get('message', {}).get('data', {})
+            event_type = data.get("message", {}).get("event_type", "")
+            event_data = data.get("message", {}).get("data", {})
 
-            if event_type == 'PassengerArrival':
+            if event_type == "PassengerArrival":
                 await self._handle_passenger_arrival(event_data)
-            elif event_type == 'PassengerPickedUp':
+            elif event_type == "PassengerPickedUp":
                 await self._handle_passenger_pickup(event_data)
-            elif event_type == 'PassengerDelivered':
+            elif event_type == "PassengerDelivered":
                 await self._handle_passenger_delivery(event_data)
 
         except Exception as e:
             logger.debug(
-                f"Station {self.station_id} passenger event error: {e}", exc_info=True)
+                f"Station {self.station_id} passenger event error: {e}", exc_info=True
+            )
 
-    async def _handle_cargo_event(self, data: Dict):
+    async def _handle_cargo_event(self, data: dict):
         """Handle cargo-related events"""
         try:
-            event_type = data.get('message', {}).get('event_type', '')
-            event_data = data.get('message', {}).get('data', {})
+            event_type = data.get("message", {}).get("event_type", "")
+            event_data = data.get("message", {}).get("data", {})
 
-            if event_type == 'CargoRequest':
+            if event_type == "CargoRequest":
                 await self._handle_cargo_request(event_data)
-            elif event_type == 'CargoLoaded':
+            elif event_type == "CargoLoaded":
                 await self._handle_cargo_loading(event_data)
-            elif event_type == 'CargoDelivered':
+            elif event_type == "CargoDelivered":
                 await self._handle_cargo_delivery(event_data)
 
         except Exception as e:
             logger.debug(
-                f"Station {self.station_id} cargo event error: {e}", exc_info=True)
+                f"Station {self.station_id} cargo event error: {e}", exc_info=True
+            )
 
-    async def _handle_system_command(self, data: Dict):
+    async def _handle_system_command(self, data: dict):
         """Handle system commands"""
         try:
-            command_type = data.get('message', {}).get('command_type', '')
-            target = data.get('message', {}).get('target', '')
+            command_type = data.get("message", {}).get("command_type", "")
+            target = data.get("message", {}).get("target", "")
 
             if target != self.station_id:
                 return
 
-            if command_type == 'UpdateCapacity':
+            if command_type == "UpdateCapacity":
                 await self._handle_capacity_update(data)
 
         except Exception as e:
-            logger.debug(
-                f"Station {self.station_id} command error: {e}", exc_info=True)
+            logger.debug(f"Station {self.station_id} command error: {e}", exc_info=True)
 
-    async def _handle_passenger_arrival(self, event_data: Dict):
+    async def _handle_passenger_arrival(self, event_data: dict):
         """Handle new passenger arrival"""
-        passenger_id = event_data.get('passenger_id')
-        station_id = event_data.get('station_id')
+        passenger_id = event_data.get("passenger_id")
+        station_id = event_data.get("station_id")
 
         if station_id != self.station_id:
             return
 
         # Add to queue
         passenger = {
-            'passenger_id': passenger_id,
-            'destination': event_data.get('destination'),
-            'priority': event_data.get('priority', Priority.NORMAL.value),
-            'group_size': event_data.get('group_size', 1),
-            'special_needs': event_data.get('special_needs', []),
-            'arrival_time': datetime.now(datetime.UTC),
-            'wait_time_limit': event_data.get('wait_time_limit', 30)
+            "passenger_id": passenger_id,
+            "destination": event_data.get("destination"),
+            "priority": event_data.get("priority", Priority.NORMAL.value),
+            "group_size": event_data.get("group_size", 1),
+            "special_needs": event_data.get("special_needs", []),
+            "arrival_time": datetime.now(datetime.UTC),
+            "wait_time_limit": event_data.get("wait_time_limit", 30),
         }
 
         self.passenger_queue.append(passenger)
         self._update_congestion_level()
 
         logger.info(
-            f"Station {self.station_id}: Passenger {passenger_id} added to queue (queue size: {len(self.passenger_queue)})")
+            f"Station {self.station_id}: Passenger {passenger_id} added to queue (queue size: {len(self.passenger_queue)})"
+        )
 
         # Check if congestion alert is needed
         if self.congestion_level > 0.7:
             await self._publish_congestion_alert()
 
-    async def _handle_cargo_request(self, event_data: Dict):
+    async def _handle_cargo_request(self, event_data: dict):
         """Handle new cargo request"""
-        request_id = event_data.get('request_id')
-        origin = event_data.get('origin')
+        request_id = event_data.get("request_id")
+        origin = event_data.get("origin")
 
         if origin != self.station_id:
             return
 
         # Add to queue
         cargo = {
-            'request_id': request_id,
-            'destination': event_data.get('destination'),
-            'weight': event_data.get('weight', 0.0),
-            'volume': event_data.get('volume', 0.0),
-            'priority': event_data.get('priority', Priority.NORMAL.value),
-            'hazardous': event_data.get('hazardous', False),
-            'temperature_controlled': event_data.get('temperature_controlled', False),
-            'deadline': event_data.get('deadline'),
-            'arrival_time': datetime.now(datetime.UTC)
+            "request_id": request_id,
+            "destination": event_data.get("destination"),
+            "weight": event_data.get("weight", 0.0),
+            "volume": event_data.get("volume", 0.0),
+            "priority": event_data.get("priority", Priority.NORMAL.value),
+            "hazardous": event_data.get("hazardous", False),
+            "temperature_controlled": event_data.get("temperature_controlled", False),
+            "deadline": event_data.get("deadline"),
+            "arrival_time": datetime.now(datetime.UTC),
         }
 
         self.cargo_queue.append(cargo)
         self._update_congestion_level()
 
         logger.info(
-            f"Station {self.station_id}: Cargo {request_id} added to queue (queue size: {len(self.cargo_queue)})")
+            f"Station {self.station_id}: Cargo {request_id} added to queue (queue size: {len(self.cargo_queue)})"
+        )
 
         # Check if congestion alert is needed
         if self.congestion_level > 0.7:
             await self._publish_congestion_alert()
 
-    async def _handle_passenger_pickup(self, event_data: Dict):
+    async def _handle_passenger_pickup(self, event_data: dict):
         """Handle passenger pickup by pod"""
-        passenger_id = event_data.get('passenger_id')
-        station_id = event_data.get('station_id')
+        passenger_id = event_data.get("passenger_id")
+        station_id = event_data.get("station_id")
 
         if station_id != self.station_id:
             return
 
         # Remove from queue
         self.passenger_queue = [
-            p for p in self.passenger_queue
-            if p['passenger_id'] != passenger_id
+            p for p in self.passenger_queue if p["passenger_id"] != passenger_id
         ]
 
         self.total_passengers_processed += 1
         self._update_congestion_level()
         self._update_wait_time_metrics()
 
-        logger.info(
-            f"Station {self.station_id}: Passenger {passenger_id} picked up")
+        logger.info(f"Station {self.station_id}: Passenger {passenger_id} picked up")
 
-    async def _handle_cargo_loading(self, event_data: Dict):
+    async def _handle_cargo_loading(self, event_data: dict):
         """Handle cargo loading by pod"""
-        request_id = event_data.get('request_id')
-        station_id = event_data.get('station_id')
+        request_id = event_data.get("request_id")
+        station_id = event_data.get("station_id")
 
         if station_id != self.station_id:
             return
 
         # Remove from queue
         self.cargo_queue = [
-            c for c in self.cargo_queue
-            if c['request_id'] != request_id
+            c for c in self.cargo_queue if c["request_id"] != request_id
         ]
 
         self.total_cargo_processed += 1
@@ -216,21 +211,24 @@ class Station(EventProcessor):
 
         logger.info(f"Station {self.station_id}: Cargo {request_id} loaded")
 
-    async def _handle_capacity_update(self, data: Dict):
+    async def _handle_capacity_update(self, data: dict):
         """Handle capacity update command"""
         try:
-            parameters = data.get('message', {}).get('parameters', {})
+            parameters = data.get("message", {}).get("parameters", {})
 
-            self.loading_bays = parameters.get('max_pods', self.loading_bays)
+            self.loading_bays = parameters.get("max_pods", self.loading_bays)
             self.processing_rate = parameters.get(
-                'processing_rate', self.processing_rate)
+                "processing_rate", self.processing_rate
+            )
 
             logger.info(
-                f"Station {self.station_id}: Capacity updated - bays: {self.loading_bays}, rate: {self.processing_rate}")
+                f"Station {self.station_id}: Capacity updated - bays: {self.loading_bays}, rate: {self.processing_rate}"
+            )
 
         except Exception as e:
             logger.debug(
-                f"Station {self.station_id} capacity update error: {e}", exc_info=True)
+                f"Station {self.station_id} capacity update error: {e}", exc_info=True
+            )
 
     def _update_congestion_level(self):
         """Calculate current congestion level"""
@@ -245,9 +243,7 @@ class Station(EventProcessor):
 
         # Weighted combination
         self.congestion_level = (
-            passenger_congestion * 0.4 +
-            cargo_congestion * 0.3 +
-            bay_utilization * 0.3
+            passenger_congestion * 0.4 + cargo_congestion * 0.3 + bay_utilization * 0.3
         )
 
         # Update status based on congestion
@@ -267,7 +263,8 @@ class Station(EventProcessor):
         for passenger in self.passenger_queue:
             wait_time = (
                 # minutes
-                current_time - passenger['arrival_time']).total_seconds() / 60
+                current_time - passenger["arrival_time"]
+            ).total_seconds() / 60
             wait_times.append(wait_time)
 
         if wait_times:
@@ -281,13 +278,15 @@ class Station(EventProcessor):
 
         # Determine affected routes (simplified)
         affected_routes = [
-            f"{self.station_id}->{station}" for station in self.connected_stations]
+            f"{self.station_id}->{station}" for station in self.connected_stations
+        ]
 
         # Estimate clear time based on processing rate
         total_items = len(self.passenger_queue) + len(self.cargo_queue)
         estimated_clear_minutes = total_items / self.processing_rate
-        estimated_clear_time = datetime.now(
-            datetime.UTC) + timedelta(minutes=estimated_clear_minutes)
+        estimated_clear_time = datetime.now(datetime.UTC) + timedelta(
+            minutes=estimated_clear_minutes
+        )
 
         # Determine severity
         if self.congestion_level > 0.9:
@@ -304,49 +303,50 @@ class Station(EventProcessor):
             average_wait_time=self.average_wait_time,
             affected_routes=affected_routes,
             estimated_clear_time=estimated_clear_time,
-            severity=severity
+            severity=severity,
         )
 
         await self.publish_event(alert)
         logger.warning(
-            f"Station {self.station_id}: Congestion alert - level {self.congestion_level:.2f}")
+            f"Station {self.station_id}: Congestion alert - level {self.congestion_level:.2f}"
+        )
 
-    def get_state(self) -> Dict:
+    def get_state(self) -> dict:
         """Get current station state"""
         return {
-            'station_id': self.station_id,
-            'status': self.status.value,
-            'congestion_level': self.congestion_level,
-            'queues': {
-                'passengers': {
-                    'waiting': len(self.passenger_queue),
-                    'average_wait_time': self.average_wait_time,
-                    'max_wait_time': self.max_wait_time
+            "station_id": self.station_id,
+            "status": self.status.value,
+            "congestion_level": self.congestion_level,
+            "queues": {
+                "passengers": {
+                    "waiting": len(self.passenger_queue),
+                    "average_wait_time": self.average_wait_time,
+                    "max_wait_time": self.max_wait_time,
                 },
-                'cargo': {
-                    'waiting': len(self.cargo_queue),
-                    'average_wait_time': self.average_wait_time  # Simplified
-                }
-            },
-            'resources': {
-                'loading_bays': {
-                    'available': self.available_bays,
-                    'total': self.loading_bays
+                "cargo": {
+                    "waiting": len(self.cargo_queue),
+                    "average_wait_time": self.average_wait_time,  # Simplified
                 },
-                'processing_rate': self.processing_rate
             },
-            'metrics': {
-                'total_passengers_processed': self.total_passengers_processed,
-                'total_cargo_processed': self.total_cargo_processed
+            "resources": {
+                "loading_bays": {
+                    "available": self.available_bays,
+                    "total": self.loading_bays,
+                },
+                "processing_rate": self.processing_rate,
             },
-            'connected_stations': self.connected_stations
+            "metrics": {
+                "total_passengers_processed": self.total_passengers_processed,
+                "total_cargo_processed": self.total_cargo_processed,
+            },
+            "connected_stations": self.connected_stations,
         }
 
 
 class PassengerGenerator:
     """Generates passenger arrivals for simulation"""
 
-    def __init__(self, message_bus: MessageBus, stations: List[str]):
+    def __init__(self, message_bus: MessageBus, stations: list[str]):
         self.message_bus = message_bus
         self.stations = stations
         self.running = False
@@ -372,8 +372,7 @@ class PassengerGenerator:
             # Poisson-like distribution for arrivals
             num_passengers = 0
             if random.random() < self.generation_rate:
-                num_passengers = random.choices(
-                    [1, 2, 3], weights=[0.7, 0.25, 0.05])[0]
+                num_passengers = random.choices([1, 2, 3], weights=[0.7, 0.25, 0.05])[0]
 
             for _ in range(num_passengers):
                 await self._create_passenger(station)
@@ -387,11 +386,11 @@ class PassengerGenerator:
         # Random priority (mostly normal, some high/urgent)
         priority_weights = {1: 0.1, 2: 0.7, 3: 0.15, 4: 0.04, 5: 0.01}
         priority = random.choices(
-            list(priority_weights.keys()), weights=list(priority_weights.values()))[0]
+            list(priority_weights.keys()), weights=list(priority_weights.values())
+        )[0]
 
         # Random group size
-        group_size = random.choices([1, 2, 3, 4], weights=[
-                                    0.6, 0.25, 0.1, 0.05])[0]
+        group_size = random.choices([1, 2, 3, 4], weights=[0.6, 0.25, 0.1, 0.05])[0]
 
         # Random special needs
         special_needs = []
@@ -407,12 +406,11 @@ class PassengerGenerator:
             priority=priority,
             group_size=group_size,
             special_needs=special_needs,
-            wait_time_limit=random.randint(15, 45)
+            wait_time_limit=random.randint(15, 45),
         )
 
         await self.message_bus.publish_event(
-            MessageBus.get_event_channel(event.event_type),
-            event
+            MessageBus.get_event_channel(event.event_type), event
         )
 
     def _create_manual_event(self, passenger_id: str, origin: str, dest: str):
@@ -423,14 +421,14 @@ class PassengerGenerator:
             priority=3,
             group_size=1,
             special_needs=[],
-            wait_time_limit=45
+            wait_time_limit=45,
         )
 
 
 class CargoGenerator:
     """Generates cargo requests for simulation"""
 
-    def __init__(self, message_bus: MessageBus, stations: List[str]):
+    def __init__(self, message_bus: MessageBus, stations: list[str]):
         self.message_bus = message_bus
         self.stations = stations
         self.running = False
@@ -465,8 +463,7 @@ class CargoGenerator:
 
         # Random cargo properties
         weight = random.choices(
-            [10, 25, 50, 100, 200],
-            weights=[0.3, 0.3, 0.2, 0.15, 0.05]
+            [10, 25, 50, 100, 200], weights=[0.3, 0.3, 0.2, 0.15, 0.05]
         )[0]
 
         volume = weight / 500.0  # Simplified volume calculation
@@ -474,7 +471,8 @@ class CargoGenerator:
         # Random priority
         priority_weights = {1: 0.2, 2: 0.6, 3: 0.15, 4: 0.04, 5: 0.01}
         priority = random.choices(
-            list(priority_weights.keys()), weights=list(priority_weights.values()))[0]
+            list(priority_weights.keys()), weights=list(priority_weights.values())
+        )[0]
 
         # Random special properties
         hazardous = random.random() < 0.05  # 5% chance
@@ -483,8 +481,9 @@ class CargoGenerator:
         # Random deadline (30% have deadlines)
         deadline = None
         if random.random() < 0.3:
-            deadline = datetime.now(datetime.UTC) + \
-                timedelta(hours=random.randint(2, 24))
+            deadline = datetime.now(datetime.UTC) + timedelta(
+                hours=random.randint(2, 24)
+            )
 
         request_id = f"c_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
 
@@ -497,25 +496,26 @@ class CargoGenerator:
             priority=priority,
             hazardous=hazardous,
             temperature_controlled=temperature_controlled,
-            deadline=deadline
+            deadline=deadline,
         )
 
         await self.message_bus.publish_event(
-            MessageBus.get_event_channel(event.event_type),
-            event
+            MessageBus.get_event_channel(event.event_type), event
         )
 
-    def _create_manual_event(self, request_id: str, origin: str, dest: str, weight: float):
+    def _create_manual_event(
+        self, request_id: str, origin: str, dest: str, weight: float
+    ):
         return CargoRequest(
             request_id=request_id,
             origin=origin,
             destination=dest,
             weight=weight,
-            volume=weight/500.0,
+            volume=weight / 500.0,
             priority=3,
             hazardous=False,
             temperature_controlled=False,
-            deadline=None
+            deadline=None,
         )
 
 

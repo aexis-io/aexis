@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from aexis.core.message_bus import MessageBus
 from aexis.core.model import PassengerArrival
 
@@ -31,7 +30,7 @@ async def test_passenger_lifecycle_flow(system_with_mock_redis):
 
     # Get initial state
     initial_state = system.get_system_state()
-    initial_pending = initial_state['metrics']['pending_passengers']
+    initial_pending = initial_state["metrics"]["pending_passengers"]
 
     # Inject passenger directly via message bus
     passenger_id = "test_passenger_001"
@@ -42,30 +41,30 @@ async def test_passenger_lifecycle_flow(system_with_mock_redis):
         priority=3,
         group_size=1,
         special_needs=[],
-        wait_time_limit=45
+        wait_time_limit=45,
     )
 
     # Verify event can be published
     success = await system.message_bus.publish_event(
-        MessageBus.get_event_channel(passenger_event.event_type),
-        passenger_event
+        MessageBus.get_event_channel(passenger_event.event_type), passenger_event
     )
     assert success, "Failed to publish passenger event"
 
     # Verify stations are subscribed to passenger events
-    passenger_channel = MessageBus.CHANNELS['PASSENGER_EVENTS']
+    passenger_channel = MessageBus.CHANNELS["PASSENGER_EVENTS"]
     assert passenger_channel in system.message_bus.subscribers
 
     # Verify at least one handler is registered
-    assert len(system.message_bus.subscribers[passenger_channel]) > 0, \
+    assert len(system.message_bus.subscribers[passenger_channel]) > 0, (
         "No handlers subscribed to passenger events"
+    )
 
     # Verify station state can be retrieved
     origin_state = origin_station.get_state()
-    assert 'station_id' in origin_state
-    assert origin_state['station_id'] == origin_id
+    assert "station_id" in origin_state
+    assert origin_state["station_id"] == origin_id
     # Station should have queues info
-    assert 'queues' in origin_state or 'queue_length' in origin_state
+    assert "queues" in origin_state or "queue_length" in origin_state
 
 
 @pytest.mark.anyio
@@ -82,8 +81,9 @@ async def test_system_topology_mesh(system_with_mock_redis):
         # Mesh should have some stations with > 2 connections (hubs)
 
     # At least some stations should be hubs (more than 2 connections)
-    hub_count = sum(1 for s in system.stations.values()
-                    if len(s.connected_stations) > 2)
+    hub_count = sum(
+        1 for s in system.stations.values() if len(s.connected_stations) > 2
+    )
     assert hub_count >= 1, "No hub stations found in mesh topology"
 
 
@@ -99,5 +99,4 @@ async def test_pod_initial_state(system_with_mock_redis):
     # All pods should have a location
     for pod_id, pod in system.pods.items():
         assert pod.location is not None, f"{pod_id} has no location"
-        assert pod.location.startswith(
-            "station_"), f"{pod_id} has invalid location"
+        assert pod.location.startswith("station_"), f"{pod_id} has invalid location"
