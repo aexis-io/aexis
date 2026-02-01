@@ -14,7 +14,8 @@
     },
     "pods": {
       "count": 25,
-      "cargoRatio": 0.5
+      "cargoRatio": 0.5,
+      "cargoPercentage": 50
     },
     "stations": {
       "count": 8

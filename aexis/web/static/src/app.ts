@@ -61,139 +61,9 @@ function init(): void {
     console.error("Visualizer setup failed:", e);
   }
 
-  // setupControls();
   connectWebSocket();
 }
 
-function setupControls(): void {
-  if (elements.zoomControl) {
-    elements.zoomControl.addEventListener('input', (e: Event) => {
-      const target = e.target as HTMLInputElement;
-      const scale = parseFloat(target.value);
-      // if (visualizer) {
-      //   visualizer.setZoom(scale);
-      // }
-      if (elements.zoomLevel) {
-        elements.zoomLevel.textContent = Math.round(scale * 100) + '%';
-      }
-    });
-  }
-
-  const pauseBtn = document.querySelector('button:nth-child(1)') as HTMLButtonElement;
-  const resetBtn = document.querySelector('button:nth-child(2)') as HTMLButtonElement;
-
-  if (pauseBtn) {
-    pauseBtn.addEventListener('click', () => {
-      if (!visualizer) return;
-      const isPaused = pauseBtn.textContent === "RESUME SIM";
-      visualizer.setPaused(!isPaused);
-      pauseBtn.textContent = isPaused ? "PAUSE SIM" : "RESUME SIM";
-      pauseBtn.classList.toggle('bg-blue-600');
-      pauseBtn.classList.toggle('bg-yellow-600');
-    });
-  }
-
-  if (resetBtn) {
-    resetBtn.addEventListener('click', () => {
-      if (!visualizer) return;
-      visualizer.resetView();
-      if (elements.zoomControl) {
-        elements.zoomControl.value = '1.0';
-      }
-      if (elements.zoomLevel) {
-        elements.zoomLevel.textContent = "100%";
-      }
-    });
-  }
-
-  setupLoadGenerator();
-}
-
-function setupLoadGenerator(): void {
-  const originSelect = document.getElementById('load-origin') as HTMLSelectElement;
-  const destSelect = document.getElementById('load-dest') as HTMLSelectElement;
-  const typeSelect = document.getElementById('load-type') as HTMLSelectElement;
-  const amountInput = document.getElementById('load-amount') as HTMLInputElement;
-  const generateBtn = document.getElementById('btn-generate-load') as HTMLButtonElement;
-
-  if (generateBtn) {
-    generateBtn.addEventListener('click', async () => {
-      const origin = originSelect?.value || '';
-      const dest = destSelect?.value || '';
-      const type = typeSelect?.value || 'passenger';
-      const amount = parseInt(amountInput?.value || '0', 10);
-
-      if (!origin || !dest || origin === dest) {
-        logEvent("Invalid Route or Missing Selection", "error");
-        return;
-      }
-
-      try {
-        const endpoint = type === 'passenger'
-          ? '/api/manual/passenger'
-          : '/api/manual/cargo';
-
-        const payload = {
-          origin,
-          destination: dest,
-          count: amount,
-          weight: amount * 100
-        };
-
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        if (response.ok) {
-          logEvent(
-            `${type.toUpperCase()} Request Sent: ${origin} -> ${dest}`,
-            "success"
-          );
-        } else {
-          logEvent("Request Failed", "error");
-        }
-      } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : 'Unknown error';
-        logEvent(`Error: ${errorMsg}`, "error");
-      }
-    });
-  }
-}
-
-// --- Dropdown Management ---
-
-let dropdownsPopulated = false;
-
-function updateDropdowns(stations: Record<string, unknown>): void {
-  if (dropdownsPopulated || !stations) return;
-
-  const originSelect = document.getElementById('load-origin') as HTMLSelectElement;
-  const destSelect = document.getElementById('load-dest') as HTMLSelectElement;
-
-  if (!originSelect || !destSelect) return;
-
-  originSelect.innerHTML = '<option value="">Origin</option>';
-  destSelect.innerHTML = '<option value="">Dest</option>';
-
-  Object.keys(stations)
-    .sort()
-    .forEach(id => {
-      const name = id.replace('station_', 'S');
-      const originOption = document.createElement('option');
-      originOption.value = id;
-      originOption.textContent = name;
-      originSelect.appendChild(originOption);
-
-      const destOption = document.createElement('option');
-      destOption.value = id;
-      destOption.textContent = name;
-      destSelect.appendChild(destOption);
-    });
-
-  dropdownsPopulated = true;
-}
 
 // --- WebSocket Connection ---
 
@@ -217,6 +87,7 @@ function connectWebSocket(): void {
   socket.onmessage = (event: MessageEvent) => {
     try {
       const data: WebSocketMessage = JSON.parse(event.data);
+      console.log('Received message:', data);
       handleMessage(data);
     } catch (e) {
       console.error('Failed to parse message:', e);
@@ -303,9 +174,6 @@ function updateMetrics(data: UpdateMetricsPayload): void {
     visualizer.updateData(data as unknown as Record<string, unknown>);
   }
 
-  if (data.stations) {
-    updateDropdowns(data.stations);
-  }
 }
 
 function updateStatus(text: string, status: StatusType): void {

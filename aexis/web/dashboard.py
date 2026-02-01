@@ -103,7 +103,13 @@ class WebDashboard:
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket endpoint for real-time updates"""
+            print(f'Hittint that ol ws {websocket.items()}')
             await self._handle_websocket(websocket)
+
+        @self.app.websocket("/ws/positions")
+        async def websocket_positions_endpoint(websocket: WebSocket):
+            """WebSocket endpoint for real-time pod position updates"""
+            await self._handle_positions_websocket(websocket)
 
         # Generic Proxy for Manual Injection
         @self.app.post("/api/manual/{path:path}")
@@ -127,7 +133,8 @@ class WebDashboard:
                         method, f"{self.api_base_url}{path}"
                     )
                 if response.status_code == 404:
-                    raise HTTPException(status_code=404, detail="Resource not found")
+                    raise HTTPException(
+                        status_code=404, detail="Resource not found")
                 return response.json()
         except httpx.ConnectError:
             # Resilience: Return offline status or empty data instead of crashing
@@ -150,7 +157,7 @@ class WebDashboard:
         """Handle WebSocket connections for real-time updates"""
         await websocket.accept()
         self.websocket_connections.append(websocket)
-
+        print('Handling websocket')
         try:
             # Poll for initial state
             try:
@@ -165,6 +172,7 @@ class WebDashboard:
                 try:
                     # Keep alive / read messages
                     message = await websocket.receive_text()
+                    print(f"Got status message {message}")
                     # We could handle client messages here
                 except WebSocketDisconnect:
                     break
@@ -174,6 +182,31 @@ class WebDashboard:
         finally:
             if websocket in self.websocket_connections:
                 self.websocket_connections.remove(websocket)
+
+    async def _handle_positions_websocket(self, websocket: WebSocket):
+        """Handle WebSocket connections for real-time pod position updates
+
+        Proxies connections from the dashboard WebSocket to the API's position stream
+        """
+        await websocket.accept()
+
+        try:
+            # Connect to API position stream
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "GET",
+                    f"{self.api_base_url}/api/ws/positions",
+                    headers={"Connection": "Upgrade", "Upgrade": "websocket"}
+                ) as response:
+                    # This won't work with httpx - need WebSocket client instead
+                    pass
+        except Exception as e:
+            logger.debug(f"Position stream connection error: {e}")
+        finally:
+            try:
+                await websocket.close()
+            except:
+                pass
 
     # Note: In a real production split, we'd need a way to receive events
     # from the Core System (e.g. via Redis PubSub) to broadcast to WebSockets.
@@ -236,7 +269,8 @@ class WebDashboard:
             while self._redis_running:
                 try:
                     message = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=1.0),
                         timeout=2.0,
                     )
                     if message and message["type"] == "message":

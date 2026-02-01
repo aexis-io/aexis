@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import asyncio
 
 from aexis.core.system import load_network_data
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -22,7 +23,9 @@ class SystemAPI:
             version="1.0.0",
         )
         self.position_subscribers = []  # WebSocket connections for position streaming
+        self._position_listener_task = None  # Task for listening to position updates
         self._setup_routes()
+        asyncio.create_task(self._start_position_listener())
 
     def _setup_routes(self):
         """Setup API routes"""
@@ -263,16 +266,47 @@ class SystemAPI:
                 if websocket in self.position_subscribers:
                     self.position_subscribers.remove(websocket)
 
+    async def _start_position_listener(self):
+        """Listen to PodPositionUpdate events from message bus and broadcast to WebSocket clients"""
+        try:
+            await asyncio.sleep(1)
+            message_bus = self.system.message_bus
+            if not message_bus:
+                logger.warning(
+                    "Message bus not available for position listener")
+                return
+
+            async def position_update_handler(data: dict):
+                """Handle PodPositionUpdate events from message bus"""
+                try:
+                    message = data.get("message", {})
+                    event_type = message.get("event_type", "")
+                    if event_type == "PodPositionUpdate":
+                        await self.broadcast_pod_position(message)
+                except Exception as e:
+                    logger.debug(f"Error processing position update: {e}")
+            message_bus.subscribe("pod_events", position_update_handler)
+        except Exception as e:
+            logger.warning(f"Position listener error: {e}")
+
     async def broadcast_pod_position(self, position_data: dict):
         """Broadcast pod position update to all connected WebSocket clients
 
-        Called by system when PodPositionUpdate events are published
+        Called when PodPositionUpdate events are published
         """
         for websocket in self.position_subscribers[:]:  # Copy list to avoid modification during iteration
             try:
+                pod_id = position_data.get("pod_id", "")
+                pod_type = "passenger"
+                if pod_id in self.system.pods:
+                    pod_type = self.system.pods[pod_id].pod_type.value
+
                 await websocket.send_json({
                     "type": "PodPositionUpdate",
-                    "data": position_data
+                    "data": {
+                        **position_data,
+                        "pod_type": pod_type
+                    }
                 })
             except Exception as e:
                 logger.debug(f"Failed to send position to client: {e}")

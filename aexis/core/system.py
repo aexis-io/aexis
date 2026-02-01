@@ -216,6 +216,8 @@ class AexisSystem:
 
         # Configuration from SystemContext instead of environment variables
         self.pod_count = self.config.get('pods.count', 25)
+        self.cargo_percentage = self.config.get(
+            'pods.cargoPercentage', 50)  # 0-100
         self.station_count = self.config.get('stations.count', 8)
         self.snapshot_interval = self.config.get(
             'system.snapshotInterval', 300)  # 5 minutes
@@ -324,6 +326,9 @@ class AexisSystem:
         # Start periodic decision making
         decision_task = asyncio.create_task(self._periodic_decision_making())
 
+        # Start pod movement simulation (Phase 1)
+        movement_task = asyncio.create_task(self._simulate_pod_movement())
+
         logger.info("AEXIS system started")
 
         try:
@@ -335,6 +340,7 @@ class AexisSystem:
                 *generator_tasks,
                 monitor_task,
                 decision_task,
+                movement_task,
                 return_exceptions=True,
             )
         except KeyboardInterrupt:
@@ -451,6 +457,7 @@ class AexisSystem:
         """Create pod instances with network positioning on edges
 
         PHASE 1: Pods spawn at random positions on network edges
+        Pod types (passenger/cargo) determined by cargoPercentage from config
         """
         for i in range(1, self.pod_count + 1):
             pod_id = f"pod_{i:03d}"
@@ -460,8 +467,12 @@ class AexisSystem:
             # The routing provider transparently handles both
             routing_provider = self._create_routing_provider(pod_id)
 
-            # Determine pod type (50/50 split for MVP)
-            if i % 2 == 0:
+            # Determine pod type based on config percentage
+            # If cargoPercentage=50, first 50% are cargo, rest are passenger
+            pod_index_percentage = ((i - 1) / self.pod_count) * 100
+            is_cargo = pod_index_percentage < self.cargo_percentage
+
+            if is_cargo:
                 pod = CargoPod(self.message_bus, pod_id, routing_provider)
             else:
                 pod = PassengerPod(self.message_bus, pod_id, routing_provider)
@@ -487,10 +498,18 @@ class AexisSystem:
                     distance_on_edge=0.0
                 )
 
+                # PHASE 2 (TODO): Find nearest station and navigate there
+                # For now, just set current_edge so movement simulation can proceed
+
             self.pods[pod_id] = pod
+            pod_type = "Cargo" if is_cargo else "Passenger"
             logger.info(
-                f"Created {pod.__class__.__name__}: {pod_id} at edge {edge_id} @ position ({coordinate.x}, {coordinate.y})"
+                f"Created {pod_type}Pod: {pod_id} at edge {edge_id} @ position ({coordinate.x}, {coordinate.y})"
             )
+
+            # Publish initial position update for UI rendering
+            # Use asyncio.create_task to fire-and-forget without blocking pod creation
+            asyncio.create_task(pod._publish_position_update())
 
     def _create_routing_provider(self, pod_id: str) -> RoutingProvider:
         """Create a configured routing provider for a pod using SystemContext
@@ -606,6 +625,35 @@ class AexisSystem:
                 logger.debug(
                     f"Periodic decision making error: {e}", exc_info=True)
                 await asyncio.sleep(60)
+
+    async def _simulate_pod_movement(self):
+        """Simulate pod movement along network edges at regular intervals
+
+        Phase 1: Pods move along edges and publish position updates for real-time UI rendering
+        """
+        update_interval = 0.1  # 100ms update frequency (10 Hz)
+
+        while self.running:
+            try:
+                current_time = datetime.now()
+
+                # Update pod positions along edges
+                for pod in self.pods.values():
+                    if pod.current_edge:
+                        # Move pod along edge
+                        reached_end = await pod.move_along_edge(update_interval)
+
+                        if reached_end:
+                            # Pod reached end of edge, will navigate to next segment in Phase 2
+                            logger.debug(
+                                f"Pod {pod.pod_id} reached edge endpoint")
+
+                await asyncio.sleep(update_interval)
+
+            except Exception as e:
+                logger.debug(
+                    f"Pod movement simulation error: {e}", exc_info=True)
+                await asyncio.sleep(update_interval)
 
     async def _update_metrics(self):
         """Update system metrics"""
