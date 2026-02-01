@@ -230,6 +230,10 @@ class DecisionContext:
     available_requests: list[dict[str, Any]]
     network_state: dict[str, Any]
     system_metrics: dict[str, Any]
+    # Enhanced pod type information
+    pod_type: str = "unknown"
+    pod_constraints: dict[str, Any] = None
+    specialization: str = "general"
 
 
 @dataclass

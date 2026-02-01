@@ -1,6 +1,8 @@
 import logging
 import sys
 from datetime import UTC, datetime, timedelta
+from enum import Enum
+from typing import Dict, Optional
 
 from .message_bus import EventProcessor, MessageBus
 from .model import (
@@ -22,6 +24,12 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+class PodType(Enum):
+    """Enumeration of pod types for system identification"""
+    PASSENGER = "passenger"
+    CARGO = "cargo"
 
 
 class Pod(EventProcessor):
@@ -50,15 +58,36 @@ class Pod(EventProcessor):
         self.movement_start_time = None
         self.estimated_arrival = None
 
+        # Pod type identification (to be set by subclasses)
+        self.pod_type = self._get_pod_type()
+
         # Setup routing provider (DIP compliant, implementation-agnostic)
         if routing_provider:
             # Use injected provider (for testing or external configuration)
             self.routing_provider = routing_provider
         else:
-            # Build default provider with offline routing
-            # Pod doesn't care if routing is AI-based, offline, or hybrid - it's transparent
+            # Create default provider with offline routing
             self.routing_provider = RoutingProvider()
             self.routing_provider.add_router(OfflineRouter())
+
+    def _get_pod_type(self) -> PodType:
+        """Get the pod type - must be implemented by subclasses"""
+        raise NotImplementedError("Subclasses must implement _get_pod_type")
+
+    def get_pod_constraints(self) -> Dict[str, Any]:
+        """Get pod-specific constraints for routing decisions"""
+        cap_used, cap_total, w_used, w_total = self._get_capacity_status()
+        return {
+            "pod_type": self.pod_type.value,
+            "capacity_available": cap_total - cap_used,
+            "weight_available": w_total - w_used,
+            "max_capacity": cap_total,
+            "max_weight": w_total,
+            "current_load": {
+                "passengers": cap_used,
+                "cargo_weight": w_used
+            }
+        }
 
     async def _setup_subscriptions(self):
         """Subscribe to relevant channels"""
@@ -179,7 +208,7 @@ class Pod(EventProcessor):
             affected_routes = alert_data.get("affected_routes", [])
 
             if not self.current_route or not self.current_route.stations:
-                returnX
+                return
 
             # Check if current route is affected
             current_route_str = "->".join(self.current_route.stations)
@@ -337,16 +366,27 @@ class PassengerPod(Pod):
         self.capacity = 4  # Seats
         self.passengers = []  # List[str] IDs
 
+    def _get_pod_type(self) -> PodType:
+        """Return passenger pod type"""
+        return PodType.PASSENGER
+
     async def _build_decision_context(self) -> DecisionContext:
+        """Build decision context with passenger-specific constraints"""
+        constraints = self.get_pod_constraints()
+        
         return DecisionContext(
             pod_id=self.pod_id,
             current_location=self.location,
             current_route=self.current_route,
             capacity_available=self.capacity - len(self.passengers),
-            weight_available=0.0,
-            available_requests=[],
+            weight_available=0.0,  # Passenger pods don't handle weight
+            available_requests=[],  # To be filled by system
             network_state={},
             system_metrics={},
+            # Enhanced context with pod type information
+            pod_type=self.pod_type.value,
+            pod_constraints=constraints,
+            specialization="passenger_transport"
         )
 
     def _get_capacity_status(self):
@@ -372,16 +412,27 @@ class CargoPod(Pod):
         self.current_weight = 0.0
         self.cargo = []  # List[str] IDs
 
+    def _get_pod_type(self) -> PodType:
+        """Return cargo pod type"""
+        return PodType.CARGO
+
     async def _build_decision_context(self) -> DecisionContext:
+        """Build decision context with cargo-specific constraints"""
+        constraints = self.get_pod_constraints()
+        
         return DecisionContext(
             pod_id=self.pod_id,
             current_location=self.location,
             current_route=self.current_route,
-            capacity_available=0,
+            capacity_available=0,  # Cargo pods don't handle passenger capacity
             weight_available=self.weight_capacity - self.current_weight,
-            available_requests=[],
+            available_requests=[],  # To be filled by system
             network_state={},
             system_metrics={},
+            # Enhanced context with pod type information
+            pod_type=self.pod_type.value,
+            pod_constraints=constraints,
+            specialization="cargo_transport"
         )
 
     def _get_capacity_status(self):
