@@ -1,3 +1,4 @@
+
 interface Vector2 {
   x: number;
   y: number;
@@ -104,6 +105,30 @@ interface StationPayload {
   type: 'passenger' | 'cargo';
   gfx: PIXI.Graphics;
   createdAt: number;
+}
+
+
+interface PodLocation {
+  location_type: 'edge' | 'node' | 'station';
+  node_id: string;
+  edge_id: string;
+  coordinate: {
+    x: number;
+    y: number;
+  };
+  distance_on_edge: number;
+}
+
+interface PodPositionUpdate {
+  current_route: null | string;  // or Route type
+  data: Record<string, unknown>;
+  event_id: string;
+  event_type: 'PodPositionUpdate';
+  location: PodLocation;
+  pod_id: string;
+  source: string;
+  status: 'en_route' | 'idle' | 'arrived' | 'error';
+  timestamp: string;  // ISO string
 }
 
 class NetworkVisualizer {
@@ -322,15 +347,21 @@ class NetworkVisualizer {
     }
   }
 
+
   /**
    * Handle real-time pod position updates from WebSocket
    */
-  handlePodPositionUpdate(positionData: any): void {
+  handlePodPositionUpdate(positionData: PodPositionUpdate): void {
+    if (!positionData?.pod_id) {
+      return;
+    }
+    // console.log("visualizer.handlePodPositionUpdate: received data:", positionData);
     const podId = positionData.pod_id;
-    const podType = positionData.pod_type as 'cargo' | 'passenger';
+    const podType = this.pods.get(podId)?.data.pod_type as 'cargo' | 'passenger';
     const location = positionData.location;
-
+    // console.log(`visualizer.handlePodPositionUpdate: pod ${podId} at location `, location)
     let pod = this.pods.get(podId);
+    console.log("visualizer.handlePodPositionUpdate: found pod with id from  ", this.pods);
 
     if (!pod) {
       // Create new pod if it doesn't exist
@@ -371,12 +402,12 @@ class NetworkVisualizer {
           pod.distanceAlongPath = pod.targetDistance;
         }
       }
+      // console.log("visualizer.handlePodPositionUpdate: pod after update: ", pod);
     }
   }
 
   updatePodColor(pod: Pod): void {
     // Update pod graphics color based on pod type (cargo=orange, passenger=teal)
-    console.log(`Drawing pod: ${pod}`);
     const podColor = pod.podType === 'cargo' ? 0xff8800 : 0x00fbff;
 
     // Redraw pod with new color
@@ -397,9 +428,11 @@ class NetworkVisualizer {
    * Handle real-time events from WebSocket
    */
   handleEvent(channel: string, eventData: any): void {
-    const eventType = eventData.event_type || '';
+    const eventType = eventData.event_type;
 
-    console.log('inbound event : ', eventType)
+    if (eventType.includes('PodPositionUpdate')) {
+      this.handlePodPositionUpdate(eventData as PodPositionUpdate);
+    }
 
     // Payload arrival at station
     if (eventType.includes('PassengerArrival')) {
@@ -546,11 +579,13 @@ class NetworkVisualizer {
 
   animate(delta: number): void {
     // interpolation factor (tunable)
+    console.log("visualizer.animate: tick delta: ", delta);
     const lerpFactor = 0.1;
 
     this.pods.forEach(pod => {
       const spine = this.spines.get(pod.spineId);
       if (!spine) return;
+      console.log('visaulizer.animate: animating pod: ', pod.data);
 
       // Simple Linear Interpolation towards server state
       // This smooths out the jitter from 1-2s polling intervals
@@ -829,4 +864,5 @@ class NetworkVisualizer {
   }
 }
 
-export { NetworkVisualizer };
+export { NetworkVisualizer, PodLocation, PodPositionUpdate };
+

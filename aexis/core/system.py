@@ -1,8 +1,5 @@
 from .network import (
-    Network,
-    NetworkAdjacency,
     NetworkContext,
-    NetworkNode,
     load_network_data,
 )
 import asyncio
@@ -10,7 +7,6 @@ import json
 import logging
 import os
 import random
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -193,7 +189,7 @@ class AexisSystem:
             password=self.config.get('redis.password'),
         )
         self.ai_provider = None
-        self.pods: Mapping[str, Pod] =  {}
+        self.pods: Mapping[str, Pod] = {}
         self.stations = {}
         self.passenger_generator = None
         self.cargo_generator = None
@@ -498,7 +494,8 @@ class AexisSystem:
                     pod.current_segment = edge_segment
                     # Approximate progress based on coordinate distance from start
                     # (Simple linear approximation for initialization)
-                    pod.segment_progress = edge_segment.start_coord.distance_to(coordinate)
+                    pod.segment_progress = edge_segment.start_coord.distance_to(
+                        coordinate)
 
                     pod.status = PodStatus.EN_ROUTE
                     pod.location_descriptor = LocationDescriptor(
@@ -510,7 +507,8 @@ class AexisSystem:
 
                     # Assign a random destination so it keeps moving after this edge
                     # Find a random station that is NOT the start/end of current edge
-                    all_stations = list(self.network_context.station_positions.keys())
+                    all_stations = list(
+                        self.network_context.station_positions.keys())
                     if all_stations:
                         import random
                         dest = random.choice(all_stations)
@@ -518,8 +516,7 @@ class AexisSystem:
                         # For now, let's just let it finish this edge.
                         # Logic in 'update' handles route completion.
                 else:
-                     logger.warning(f"Spawned on unknown edge {edge_id}")
-
+                    logger.warning(f"Spawned on unknown edge {edge_id}")
 
             self.pods[pod_id] = pod
             pod_type = "Cargo" if is_cargo else "Passenger"
@@ -648,11 +645,11 @@ class AexisSystem:
 
     async def _simulate_pod_movement(self):
         """Simulate pod movement with continuous path integration
-        
+
         Uses precise delta-time calculation to ensure smooth, speed-consistent movement
         regardless of the actual update frequency (server lag resilience).
         """
-        target_interval = 5.0  # Target 10 Hz . 500ms
+        target_interval = 5  # Target 10 Hz
         loop = asyncio.get_running_loop()
         last_time = loop.time()
 
@@ -661,10 +658,10 @@ class AexisSystem:
                 now = loop.time()
                 dt = now - last_time
                 last_time = now
-                
+
                 # Cap dt to avoid massive jumps if thread hangs (e.g. max 1.0s)
                 dt = min(dt, 1.0)
-                print(f"Updating pods position")
+
                 # Update all pods
                 # In Phase 2, this could be parallelized if pod count > 1000
                 for pod in self.pods.values():
@@ -673,7 +670,7 @@ class AexisSystem:
                 # Sleep strict remainder to maintain roughly target rate
                 # processing_time = loop.time() - now
                 # sleep_time = max(0.01, target_interval - processing_time)
-                
+
                 # Simple sleep is fine for now, dt handles the physics correctness
                 await asyncio.sleep(target_interval)
 

@@ -1,4 +1,4 @@
-import { NetworkVisualizer } from './visualizer.js';
+import { NetworkVisualizer, PodPositionUpdate } from './visualizer.js';
 
 
 interface DOMElements {
@@ -87,7 +87,6 @@ async function fetchInitialPodPositions(): Promise<void> {
     // Initialize each pod in the visualizer with current position and type
     for (const [podId, podState] of Object.entries(podsData)) {
       const pod = podState as Record<string, unknown>;
-
       // Extract pod type - prefer direct pod_type field
       const podType = (pod.pod_type as string)?.toLowerCase() === 'cargo'
         ? 'cargo'
@@ -98,7 +97,7 @@ async function fetchInitialPodPositions(): Promise<void> {
         pod_id: podId,
         location: pod.coordinate || {
           location_type: 'station',
-          node_id: 'unknown',
+          node_id: null,
           coordinate: { x: 0, y: 0 },
           distance_on_edge: 0
         },
@@ -108,7 +107,8 @@ async function fetchInitialPodPositions(): Promise<void> {
       };
 
       // Initialize pod in visualizer
-      visualizer.handlePodPositionUpdate(positionData);
+      // visualizer.updateData(positionData as any);
+      visualizer.handlePodPositionUpdate(positionData as any);
     }
 
     console.log(`Initialized ${Object.keys(podsData).length} pods from API`);
@@ -137,35 +137,30 @@ function connectWebSocket(): void {
   };
 
   posSocket.onopen = () => {
-    console.log('Position WebSocket connected');
     // Fetch initial pod positions and render them
     fetchInitialPodPositions();
   }
 
   posSocket.onmessage = (event: MessageEvent) => {
     try {
-      const message = JSON.parse(event.data);
-      if (message.type === 'PodPositionUpdate' && visualizer) {
-        console.log(message);
-        visualizer.handlePodPositionUpdate(message.data);
-      }
+      const data: WebSocketMessage = JSON.parse(event.data);
+      handleMessage(data);
     } catch (e) {
       console.error('Failed to parse position message:', e);
     }
   };
 
   posSocket.onclose = () => {
-    console.log('Position stream disconnected');
+    
   };
 
   posSocket.onerror = (error: Event) => {
-    console.error('Position stream error:', error);
+    
   };
 
   socket.onmessage = (event: MessageEvent) => {
     try {
       const data: WebSocketMessage = JSON.parse(event.data);
-      console.log('Received message:', data);
       handleMessage(data);
     } catch (e) {
       console.error('Failed to parse message:', e);
@@ -199,9 +194,8 @@ function handleMessage(payload: WebSocketMessage): void {
       // Forward real-time events to visualizer
       if (visualizer && payload.data) {
         const channel = (payload as any).channel || '';
-        console.log("channel: ", channel)
-        console.log('event_payload: ', payload)
-        visualizer.handleEvent(channel, payload.data);
+        const data: any = payload.data as any;
+        visualizer.handleEvent(channel, data);
       }
       break;
 

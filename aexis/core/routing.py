@@ -116,12 +116,23 @@ class OfflineRoutingStrategy(RoutingStrategy):
         destinations = self._extract_destinations(context)
 
         if not destinations:
-            return {
-                "route": [context.current_location],
-                "duration": 0,
-                "distance": 0,
-                "confidence": 0.8,
-            }
+            # Patrol mode: Pick a random destination if no requests are pending
+            # This ensures pods keep moving for observation/availability
+            all_stations = list(self.network_context.station_positions.keys())
+            if len(all_stations) > 1:
+                import random
+                candidates = [s for s in all_stations if s != context.current_location]
+                if candidates:
+                    dest = random.choice(candidates)
+                    destinations.add(dest)
+            
+            if not destinations:
+                return {
+                    "route": [context.current_location],
+                    "duration": 0,
+                    "distance": 0,
+                    "confidence": 0.8,
+                }
 
         # Solve TSP
         optimal_route = self._solve_traveling_salesman(

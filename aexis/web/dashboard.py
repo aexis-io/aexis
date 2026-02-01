@@ -103,7 +103,6 @@ class WebDashboard:
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket endpoint for real-time updates"""
-            print(f'Hitting that ol ws {websocket.items()}')
             await self._handle_websocket(websocket)
 
         @self.app.websocket("/ws/positions")
@@ -157,7 +156,6 @@ class WebDashboard:
         """Handle WebSocket connections for real-time updates"""
         await websocket.accept()
         self.websocket_connections.append(websocket)
-        print('Handling websocket')
         try:
             # Poll for initial state
             try:

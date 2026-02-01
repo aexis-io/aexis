@@ -485,6 +485,11 @@ class Pod(EventProcessor):
         await self._publish_position_update()
         await self._publish_status_update()
         logger.info(f"Pod {self.pod_id} arrived at destination")
+        
+        # Immediately make a new decision to keep moving (Patrol/Next Task)
+        # Verify we are not blocked by some other state
+        if self.status == PodStatus.IDLE:
+             await self.make_decision()
 
     async def navigate_to_station(self, target_station: str) -> bool:
         """Start navigation from current position to target station
@@ -561,6 +566,7 @@ class Pod(EventProcessor):
             status=self.status.value,
             current_route=self.current_route.stations if self.current_route else None
         )
+        print(f"Pod {self.pod_id} position update: ({self.location_descriptor.coordinate.x}, {self.location_descriptor.coordinate.y})")
         await self.publish_event(event)
 
     def _get_capacity_status(self):
@@ -575,15 +581,17 @@ class Pod(EventProcessor):
         if self.location_descriptor.location_type == "station":
             location_str = self.location_descriptor.node_id
         else:
-            location_str = f"on edge {self.location_descriptor.edge_id} @ {self.distance_on_edge:.1f}m"
+            location_str = f"on edge {self.location_descriptor.edge_id} @ {self.segment_progress:.1f}m"
 
         return {
             "pod_id": self.pod_id,
             "pod_type": self._get_pod_type().value,
-            "type": self.__class__.__name__,
             "status": self.status.value,
             "location": location_str,
             "coordinate": {"x": self.location_descriptor.coordinate.x, "y": self.location_descriptor.coordinate.y},
+            # Add explicit new fields for UI if they want them
+            "spine_id": self.location_descriptor.edge_id,
+            "distance": self.segment_progress,
             "capacity": {"used": cap_used, "total": cap_total},
             "weight": {"used": w_used, "total": w_total},
             "current_route": [s for s in self.current_route.stations]
