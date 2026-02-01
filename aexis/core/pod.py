@@ -436,7 +436,6 @@ class Pod(EventProcessor):
         
         # Publish exactly one position update per physics tick
         # This gives the UI the final resolved position after all internal edge transitions
-        print(f"Publishing position update for pod {self.pod_id}, ({self.location_descriptor.coordinate.x}, {self.location_descriptor.coordinate.y})")
         await self._publish_position_update()
         return False
 

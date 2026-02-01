@@ -191,15 +191,44 @@ class WebDashboard:
         await websocket.accept()
 
         try:
-            # Connect to API position stream
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "GET",
-                    f"{self.api_base_url}/api/ws/positions",
-                    headers={"Connection": "Upgrade", "Upgrade": "websocket"}
-                ) as response:
-                    # This won't work with httpx - need WebSocket client instead
-                    pass
+            # Connect to API position stream using websockets library
+            import websockets
+            
+            # Determine API WS URL (replace http/https with ws/wss)
+            # Ensure we don't double-slash if base_url ends with /
+            api_base = self.api_base_url.rstrip("/")
+            api_ws_base = api_base.replace("http://", "ws://").replace("https://", "wss://")
+            ws_url = f"{api_ws_base}/api/ws/positions"
+            
+            logger.info(f"Connecting to upstream position stream: {ws_url}")
+
+            async with websockets.connect(ws_url) as upstream_ws:
+                # Create tasks for bidirectional forwarding
+                async def forward_upstream_to_client():
+                    try:
+                        async for message in upstream_ws:
+                            await websocket.send_text(message)
+                    except Exception as e:
+                        logger.debug(f"Error forwarding upstream -> client: {e}")
+
+                async def forward_client_to_upstream():
+                    try:
+                        while True:
+                            message = await websocket.receive_text()
+                            await upstream_ws.send(message)
+                    except WebSocketDisconnect:
+                        pass # Client disconnected
+                    except Exception as e:
+                        logger.debug(f"Error forwarding client -> upstream: {e}")
+
+                # Run until either disconnects
+                # We prioritize upstream_to_client for position updates
+                await asyncio.gather(
+                    forward_upstream_to_client(),
+                    forward_client_to_upstream(),
+                    return_exceptions=True
+                )
+
         except Exception as e:
             logger.debug(f"Position stream connection error: {e}")
         finally:

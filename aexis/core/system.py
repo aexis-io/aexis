@@ -652,7 +652,7 @@ class AexisSystem:
         Uses precise delta-time calculation to ensure smooth, speed-consistent movement
         regardless of the actual update frequency (server lag resilience).
         """
-        target_interval = 0.1  # Target 10 Hz
+        target_interval = 5.0  # Target 10 Hz . 500ms
         loop = asyncio.get_running_loop()
         last_time = loop.time()
 
