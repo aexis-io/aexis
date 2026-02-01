@@ -118,7 +118,7 @@ class SystemContext:
             self._config = AexisConfig(
                 debug=config_section.get('debug', False),
                 network_data_path=config_section.get(
-                    'networkDataPath', 'aexis/network.json'),
+                    'networkDataPath', 'network.json'),
                 **{k: v for k, v in config_section.items() if k not in ['debug', 'networkDataPath']}
             )
 
@@ -220,6 +220,7 @@ class AexisSystem:
 
     async def initialize(self) -> bool:
         """Initialize system"""
+        print(f"Loaded {self.pod_count} pods");
         try:
             # Connect to Redis
             if not await self.message_bus.connect():
@@ -649,7 +650,7 @@ class AexisSystem:
         Uses precise delta-time calculation to ensure smooth, speed-consistent movement
         regardless of the actual update frequency (server lag resilience).
         """
-        target_interval = 5  # Target 10 Hz
+        target_interval = 0.5  # Target 10 Hz
         loop = asyncio.get_running_loop()
         last_time = loop.time()
 

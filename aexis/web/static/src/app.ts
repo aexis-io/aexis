@@ -95,13 +95,14 @@ async function fetchInitialPodPositions(): Promise<void> {
       // Build position data compatible with handlePodPositionUpdate
       const positionData = {
         pod_id: podId,
-        location: pod.coordinate || {
-          location_type: 'station',
-          node_id: null,
-          coordinate: { x: 0, y: 0 },
-          distance_on_edge: 0
-        },
         pod_type: podType,
+        location: {
+          location_type: pod.spine_id ? 'edge' : 'station',
+          node_id: !pod.spine_id ? (pod.location as string) : null,
+          edge_id: (pod.spine_id as string) || null,
+          coordinate: pod.coordinate,
+          distance_on_edge: (pod.distance as number) || 0
+        },
         status: pod.status || 'idle',
         current_route: pod.current_route || null
       };

@@ -351,17 +351,20 @@ class NetworkVisualizer {
   /**
    * Handle real-time pod position updates from WebSocket
    */
-  handlePodPositionUpdate(positionData: PodPositionUpdate): void {
+  handlePodPositionUpdate(positionData: any): void {
     if (!positionData?.pod_id) {
       return;
     }
     // console.log("visualizer.handlePodPositionUpdate: received data:", positionData);
     const podId = positionData.pod_id;
-    const podType = this.pods.get(podId)?.data.pod_type as 'cargo' | 'passenger';
     const location = positionData.location;
+    
+    // Extract pod type - check positionData first, then fallback to existing pod data
+    const podType = (positionData.pod_type || (positionData as any).data?.pod_type || this.pods.get(podId)?.podType || 'passenger') as 'cargo' | 'passenger';
+    
     // console.log(`visualizer.handlePodPositionUpdate: pod ${podId} at location `, location)
     let pod = this.pods.get(podId);
-    console.log("visualizer.handlePodPositionUpdate: found pod with id from  ", this.pods);
+    // console.log("visualizer.handlePodPositionUpdate: found pod with id from  ", this.pods);
 
     if (!pod) {
       // Create new pod if it doesn't exist
@@ -381,28 +384,42 @@ class NetworkVisualizer {
 
     // Update position data
     if (location) {
+      // Correctly track spineId and station status
+      const isAtStation = location.location_type === 'station' || !!location.node_id;
+      
       pod.data = {
         ...pod.data,
         location: location,
         pod_type: podType
       };
 
-      // Update spine ID if on edge
-      if (location.edge_id && pod.spineId !== location.edge_id) {
-        pod.spineId = location.edge_id;
-      }
+      if (isAtStation) {
+        pod.spineId = ""; // No spine if at station
+        pod.targetDistance = 0;
+        pod.distanceAlongPath = 0;
+        // Snap immediately to station coordinate
+        if (location.coordinate) {
+          pod.gfx.position.set(location.coordinate.x, location.coordinate.y);
+        }
+      } else {
+        // Update spine ID if on edge
+        if (location.edge_id && pod.spineId !== location.edge_id) {
+          pod.spineId = location.edge_id;
+        }
 
-      // Update distance along path
-      if (typeof location.distance_on_edge === 'number') {
-        pod.targetDistance = location.distance_on_edge;
-        pod.lastUpdate = Date.now();
+        // Update distance along path
+        if (typeof location.distance_on_edge === 'number') {
+          pod.targetDistance = location.distance_on_edge;
+          pod.lastUpdate = Date.now();
 
-        // Snap if jump is too large
-        if (Math.abs(pod.targetDistance - pod.distanceAlongPath) > 100) {
-          pod.distanceAlongPath = pod.targetDistance;
+          // Snap if jump is too large (e.g. teleporting across map or segment change)
+          const distDiff = Math.abs(pod.targetDistance - pod.distanceAlongPath);
+          if (distDiff > 100 || pod.spineId !== location.edge_id) {
+            pod.distanceAlongPath = pod.targetDistance;
+          }
         }
       }
-      // console.log("visualizer.handlePodPositionUpdate: pod after update: ", pod);
+      console.log("visualizer.handlePodPositionUpdate: pod after update: ", pod);
     }
   }
 
@@ -579,20 +596,21 @@ class NetworkVisualizer {
 
   animate(delta: number): void {
     // interpolation factor (tunable)
-    console.log("visualizer.animate: tick delta: ", delta);
     const lerpFactor = 0.1;
 
     this.pods.forEach(pod => {
+      // If the pod is at a station (no spineId), we don't interpolate distance,
+      // its position was already set in handlePodPositionUpdate.
+      if (!pod.spineId) return;
+
       const spine = this.spines.get(pod.spineId);
+      // console.log("Finding spine for pod: ", pod.spineId, spine);
       if (!spine) return;
-      console.log('visaulizer.animate: animating pod: ', pod.data);
+      // console.log("Animating pod on spine: ", pod.spineId, spine);
 
       // Simple Linear Interpolation towards server state
-      // This smooths out the jitter from 1-2s polling intervals
       const diff = pod.targetDistance - pod.distanceAlongPath;
 
-      // If distance is small, just move; if large (wrap around?), snap.
-      // Assuming spines are linear and don't loop internally.
       if (Math.abs(diff) > 0.1) {
         pod.distanceAlongPath += diff * lerpFactor;
       } else {
@@ -600,13 +618,11 @@ class NetworkVisualizer {
       }
 
       // authoritative sample & render
-      // Even if halted, we update position (it stays at endpoint)
       const sample = this.sampleSpine(spine, pod.distanceAlongPath);
+      // console.log("p1: ", pod.gfx.position, " p2: ", sample.position);
       pod.gfx.position.set(sample.position.x, sample.position.y);
 
       // Orient towards tangent
-      // Optimization: Don't rotate if barely moving to avoid jitter
-      // But for TRON lines, constant rotation based on tangent is fine
       pod.gfx.rotation = Math.atan2(sample.tangent.y, sample.tangent.x);
     });
   }
@@ -620,6 +636,7 @@ class NetworkVisualizer {
     try {
       const response = await fetch('/api/network');
       const data = await response.json() as NetworkData;
+      console.log('Got network data', data);
 
       // Apply layout scale to coordinates if needed, or assume they are pre-scaled
       // For this network.json, coordinates look like -700, 800, so likely no scale needed or scale = 1
@@ -681,12 +698,13 @@ class NetworkVisualizer {
 
         // Let's create directed spines for EVERY adjacency.
         // edgeId = "source->target"
-        const edgeId = `${sourceNode.id}->${targetId}`;
+        const edgeId = `station_${sourceNode.id}->station_${targetId}`;
 
         // Generate geometry (Octilinear path between nodes)
         const pathPoints = this.getOctilinearPath(startNode.x, startNode.y, endNode.x, endNode.y);
 
         const spine = this.createSpine(pathPoints, edgeId, startNode, endNode);
+        // console.log("Setting spine: ", edgeId, spine);
         this.spines.set(edgeId, spine);
 
         // Register connection
