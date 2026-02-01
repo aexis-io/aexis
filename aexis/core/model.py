@@ -256,3 +256,78 @@ class DecisionOutcome:
     passenger_satisfaction: float
     cargo_on_time_rate: float
     lessons_learned: list[str] = field(default_factory=list)
+
+
+# ============================================================================
+# Network Positioning & Movement Models (Phase 1 Implementation)
+# ============================================================================
+
+@dataclass
+class Coordinate:
+    """2D coordinate in network space"""
+    x: float
+    y: float
+
+    def distance_to(self, other: "Coordinate") -> float:
+        """Calculate Euclidean distance to another coordinate"""
+        import math
+        return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
+
+    def interpolate(self, other: "Coordinate", t: float) -> "Coordinate":
+        """Interpolate between two coordinates (t: 0.0-1.0)"""
+        t = max(0.0, min(1.0, t))
+        return Coordinate(
+            x=self.x + (other.x - self.x) * t,
+            y=self.y + (other.y - self.y) * t
+        )
+
+
+@dataclass
+class EdgeSegment:
+    """Network edge segment between two nodes"""
+    segment_id: str  # Format: "node_a->node_b"
+    start_node: str
+    end_node: str
+    start_coord: Coordinate
+    end_coord: Coordinate
+    length: float = 0.0  # Cached Euclidean distance
+
+    def __post_init__(self):
+        """Calculate length if not provided"""
+        if self.length == 0.0:
+            self.length = self.start_coord.distance_to(self.end_coord)
+
+    def get_point_at_distance(self, distance: float) -> Coordinate:
+        """Get coordinate at distance along segment (clamped 0 to length)"""
+        if self.length == 0.0:
+            return self.start_coord
+        t = min(1.0, max(0.0, distance / self.length))
+        return self.start_coord.interpolate(self.end_coord, t)
+
+
+@dataclass
+class LocationDescriptor:
+    """Describes a pod's location on the network"""
+    location_type: str  # "station" | "edge"
+    node_id: str = ""  # For station locations
+    edge_id: str = ""  # For edge locations (format: "node_a->node_b")
+    coordinate: Coordinate = field(default_factory=lambda: Coordinate(0, 0))
+    distance_on_edge: float = 0.0  # Progress along edge (0.0 to edge.length)
+
+    def __hash__(self):
+        """Make hashable for use in sets/dicts"""
+        if self.location_type == "station":
+            return hash(("station", self.node_id))
+        return hash(("edge", self.edge_id, self.distance_on_edge))
+
+
+@dataclass
+class PodPositionUpdate(Event):
+    """Real-time pod position update for UI streaming"""
+    event_type: str = "PodPositionUpdate"
+    pod_id: str = ""
+    location: LocationDescriptor = field(
+        default_factory=lambda: LocationDescriptor("station", "unknown"))
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    status: str = "idle"
+    current_route: Optional[list[str]] = None

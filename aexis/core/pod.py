@@ -2,16 +2,19 @@ import logging
 import sys
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 from .message_bus import EventProcessor, MessageBus
 from .model import (
     Decision,
     DecisionContext,
+    LocationDescriptor,
     PodDecision,
+    PodPositionUpdate,
     PodStatus,
     PodStatusUpdate,
     Route,
+    Coordinate,
 )
 from .routing import OfflineRouter, RoutingProvider
 
@@ -52,7 +55,14 @@ class Pod(EventProcessor):
         super().__init__(message_bus, pod_id)
         self.pod_id = pod_id
         self.status = PodStatus.IDLE
-        self.location = "station_001"
+
+        # PHASE 1: Position tracking on network
+        self.location_descriptor = LocationDescriptor(
+            "station", "station_001")  # Default
+        self.current_edge: str | None = None  # Edge ID if on edge
+        # Progress along edge (0.0 to edge.length)
+        self.distance_on_edge: float = 0.0
+        self.speed: float = 10.0  # Units per second (configurable)
 
         self.current_route: Route | None = None
         self.movement_start_time = None
@@ -138,9 +148,11 @@ class Pod(EventProcessor):
                 await self._handle_congestion_alert(data)
 
         except KeyError as e:
-            logger.warning(f"Pod {self.pod_id}: malformed event data - missing key {e}")
+            logger.warning(
+                f"Pod {self.pod_id}: malformed event data - missing key {e}")
         except Exception as e:
-            logger.error(f"Pod {self.pod_id} event handling error: {e}", exc_info=True)
+            logger.error(
+                f"Pod {self.pod_id} event handling error: {e}", exc_info=True)
 
     async def _handle_route_assignment(self, data: dict):
         """Handle route assignment command"""
@@ -164,7 +176,8 @@ class Pod(EventProcessor):
                 self.current_route = route_obj
             elif isinstance(route_data, dict):
                 # Deserialize from dict with validation
-                required_fields = {"route_id", "stations", "estimated_duration"}
+                required_fields = {"route_id",
+                                   "stations", "estimated_duration"}
                 if not required_fields.issubset(route_data.keys()):
                     logger.error(
                         f"Invalid route object: missing fields {required_fields - route_data.keys()}"
@@ -257,7 +270,8 @@ class Pod(EventProcessor):
                 f"Pod {self.pod_id}: routing failure (all strategies exhausted) - {e}"
             )
         except Exception as e:
-            logger.error(f"Pod {self.pod_id} decision making error: {e}", exc_info=True)
+            logger.error(
+                f"Pod {self.pod_id} decision making error: {e}", exc_info=True)
 
     async def _build_decision_context(self) -> DecisionContext:
         """Build context for decision making - must be implemented by subclasses
@@ -288,7 +302,8 @@ class Pod(EventProcessor):
             self.status = PodStatus.EN_ROUTE
             self.movement_start_time = datetime.now(UTC)
 
-            logger.info(f"Pod {self.pod_id} executing decision: {decision.route}")
+            logger.info(
+                f"Pod {self.pod_id} executing decision: {decision.route}")
 
         # Logic to "load" passengers/cargo based on accepted requests would go here
         # For MVP we just track them in the list
@@ -319,7 +334,7 @@ class Pod(EventProcessor):
 
         event = PodStatusUpdate(
             pod_id=self.pod_id,
-            location=self.location,
+            location=self.location_descriptor.node_id if self.location_descriptor.location_type == "station" else self.current_edge,
             status=self.status,
             capacity_used=cap_used,
             capacity_total=cap_total,
@@ -330,6 +345,137 @@ class Pod(EventProcessor):
 
         await self.publish_event(event)
 
+    # ========================================================================
+    # PHASE 1: Movement Simulation on Network Edges
+    # ========================================================================
+
+    async def move_along_edge(self, time_delta: float) -> bool:
+        """Simulate pod movement along current edge
+
+        Args:
+            time_delta: Time elapsed since last update (seconds)
+
+        Returns:
+            True if pod reached destination, False if still moving
+        """
+        if not self.current_edge or self.status != PodStatus.EN_ROUTE:
+            return False
+
+        try:
+            from .network import NetworkContext
+            network = NetworkContext.get_instance()
+
+            if self.current_edge not in network.edges:
+                logger.warning(
+                    f"Pod {self.pod_id}: invalid edge {self.current_edge}")
+                return False
+
+            edge = network.edges[self.current_edge]
+            distance_traveled = self.speed * time_delta
+            self.distance_on_edge += distance_traveled
+
+            # Check if reached end of edge
+            if self.distance_on_edge >= edge.length:
+                # Reached destination node
+                self.distance_on_edge = edge.length
+                self.location_descriptor = LocationDescriptor(
+                    "station",
+                    node_id=edge.end_node,
+                    coordinate=edge.end_coord
+                )
+                self.current_edge = None
+                return True
+            else:
+                # Still on edge - update position
+                coord = edge.get_point_at_distance(self.distance_on_edge)
+                self.location_descriptor = LocationDescriptor(
+                    "edge",
+                    edge_id=self.current_edge,
+                    coordinate=coord,
+                    distance_on_edge=self.distance_on_edge
+                )
+
+                # Publish real-time position update for UI
+                await self._publish_position_update()
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Pod {self.pod_id} movement error: {e}", exc_info=True)
+            return False
+
+    async def navigate_to_station(self, target_station: str) -> bool:
+        """Start navigation from current position to target station
+
+        Args:
+            target_station: Station ID to navigate to
+
+        Returns:
+            True if navigation started, False if already at station
+        """
+        try:
+            from .network import NetworkContext
+            import networkx as nx
+
+            network = NetworkContext.get_instance()
+
+            # If already at a station, find path from there
+            if self.location_descriptor.location_type == "station":
+                current_station = self.location_descriptor.node_id
+            else:
+                # On an edge - find nearest station or endpoint
+                current_station = network.get_nearest_station(
+                    self.location_descriptor.coordinate)
+
+            if current_station == target_station:
+                logger.debug(f"Pod {self.pod_id} already at {target_station}")
+                return False
+
+            # Find shortest path using network graph
+            try:
+                path = nx.shortest_path(
+                    network.network_graph, current_station, target_station)
+                if len(path) < 2:
+                    return False
+
+                # Start navigation on first edge
+                first_edge_id = f"{path[0]}->{path[1]}"
+                if first_edge_id in network.edges:
+                    self.current_edge = first_edge_id
+                    self.distance_on_edge = 0.0
+                    self.status = PodStatus.EN_ROUTE
+
+                    # Store remaining path for decision making
+                    self.current_route = Route(
+                        route_id=f"nav_{datetime.now().timestamp()}",
+                        stations=path,
+                        estimated_duration=int(sum(network.network_graph[path[i]][path[i+1]]["weight"]
+                                                   for i in range(len(path)-1)) / self.speed / 60)
+                    )
+                    logger.info(
+                        f"Pod {self.pod_id} starting navigation to {target_station}")
+                    await self._publish_position_update()
+                    return True
+            except nx.NetworkXNoPath:
+                logger.warning(
+                    f"Pod {self.pod_id}: no path to {target_station}")
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Pod {self.pod_id} navigation error: {e}", exc_info=True)
+            return False
+
+    async def _publish_position_update(self):
+        """Publish real-time position update for UI streaming"""
+        event = PodPositionUpdate(
+            pod_id=self.pod_id,
+            location=self.location_descriptor,
+            status=self.status.value,
+            current_route=self.current_route.stations if self.current_route else None
+        )
+        await self.publish_event(event)
+
     def _get_capacity_status(self):
         """Return (cap_used, cap_total, weight_used, weight_total)"""
         return 0, 0, 0.0, 0.0
@@ -337,11 +483,19 @@ class Pod(EventProcessor):
     def get_state(self) -> dict:
         """Get current pod state"""
         cap_used, cap_total, w_used, w_total = self._get_capacity_status()
+
+        # Build location description
+        if self.location_descriptor.location_type == "station":
+            location_str = self.location_descriptor.node_id
+        else:
+            location_str = f"on edge {self.location_descriptor.edge_id} @ {self.distance_on_edge:.1f}m"
+
         return {
             "pod_id": self.pod_id,
             "type": self.__class__.__name__,
             "status": self.status.value,
-            "location": self.location,
+            "location": location_str,
+            "coordinate": {"x": self.location_descriptor.coordinate.x, "y": self.location_descriptor.coordinate.y},
             "capacity": {"used": cap_used, "total": cap_total},
             "weight": {"used": w_used, "total": w_total},
             "current_route": [s for s in self.current_route.stations]
@@ -373,10 +527,19 @@ class PassengerPod(Pod):
     async def _build_decision_context(self) -> DecisionContext:
         """Build decision context with passenger-specific constraints"""
         constraints = self.get_pod_constraints()
-        
+
+        # Get current location - either station or nearest station if on edge
+        if self.location_descriptor.location_type == "station":
+            current_location = self.location_descriptor.node_id
+        else:
+            from .network import NetworkContext
+            network = NetworkContext.get_instance()
+            current_location = network.get_nearest_station(
+                self.location_descriptor.coordinate)
+
         return DecisionContext(
             pod_id=self.pod_id,
-            current_location=self.location,
+            current_location=current_location,
             current_route=self.current_route,
             capacity_available=self.capacity - len(self.passengers),
             weight_available=0.0,  # Passenger pods don't handle weight
@@ -419,10 +582,19 @@ class CargoPod(Pod):
     async def _build_decision_context(self) -> DecisionContext:
         """Build decision context with cargo-specific constraints"""
         constraints = self.get_pod_constraints()
-        
+
+        # Get current location - either station or nearest station if on edge
+        if self.location_descriptor.location_type == "station":
+            current_location = self.location_descriptor.node_id
+        else:
+            from .network import NetworkContext
+            network = NetworkContext.get_instance()
+            current_location = network.get_nearest_station(
+                self.location_descriptor.coordinate)
+
         return DecisionContext(
             pod_id=self.pod_id,
-            current_location=self.location,
+            current_location=current_location,
             current_route=self.current_route,
             capacity_available=0,  # Cargo pods don't handle passenger capacity
             weight_available=self.weight_capacity - self.current_weight,

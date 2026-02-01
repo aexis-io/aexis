@@ -1,10 +1,13 @@
 import json
 import math
 import os
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
+from .model import Coordinate, EdgeSegment
+
 
 @dataclass
 class NetworkAdjacency:
@@ -53,13 +56,14 @@ def load_network_data(path: str) -> dict[str, Any] | None:
 
 
 class NetworkContext:
-    """Centralized context for network state and topology"""
+    """Centralized context for network state and topology with edge support"""
 
     _instance = None
 
     def __init__(self, network_data: dict | None = None):
         self.network_graph = nx.Graph()
         self.station_positions = {}
+        self.edges: dict[str, EdgeSegment] = {}  # Map edge_id -> EdgeSegment
         # Map station_id -> Station object (populated by system)
         self.stations = {}
 
@@ -120,11 +124,85 @@ class NetworkContext:
                 self.network_graph.add_edge(
                     station_id, target_id, weight=weight)
 
+        # Create edge segments for movement simulation
+        self._build_edge_segments()
+
         # Recalculate weights based on Euclidean distance for consistency
         for u, v in self.network_graph.edges():
             dist = self.calculate_distance(u, v)
             if dist > 0:
                 self.network_graph[u][v]["weight"] = dist
+
+    def _build_edge_segments(self):
+        """Build bidirectional EdgeSegment objects for all edges in the graph"""
+        for u, v in self.network_graph.edges():
+            pos_u = self.station_positions.get(u, (0, 0))
+            pos_v = self.station_positions.get(v, (0, 0))
+
+            coord_u = Coordinate(pos_u[0], pos_u[1])
+            coord_v = Coordinate(pos_v[0], pos_v[1])
+
+            # Create bidirectional segments
+            edge_id_forward = f"{u}->{v}"
+            edge_id_backward = f"{v}->{u}"
+
+            seg_forward = EdgeSegment(
+                segment_id=edge_id_forward,
+                start_node=u,
+                end_node=v,
+                start_coord=coord_u,
+                end_coord=coord_v
+            )
+            seg_backward = EdgeSegment(
+                segment_id=edge_id_backward,
+                start_node=v,
+                end_node=u,
+                start_coord=coord_v,
+                end_coord=coord_u
+            )
+
+            self.edges[edge_id_forward] = seg_forward
+            self.edges[edge_id_backward] = seg_backward
+
+    def spawn_pod_at_random_edge(self) -> tuple[str, Coordinate]:
+        """Spawn a pod at a random position on a random edge
+
+        Returns:
+            (edge_id, coordinate) - The edge and starting position
+        """
+        if not self.edges:
+            # Fallback: spawn at first station
+            station_id = list(self.station_positions.keys())[
+                0] if self.station_positions else "station_001"
+            pos = self.station_positions.get(station_id, (0, 0))
+            return station_id, Coordinate(pos[0], pos[1])
+
+        # Pick random edge
+        edge_id = random.choice(list(self.edges.keys()))
+        edge = self.edges[edge_id]
+
+        # Pick random position along edge (but not too close to endpoints)
+        distance_on_edge = random.uniform(0.1 * edge.length, 0.9 * edge.length)
+        coord = edge.get_point_at_distance(distance_on_edge)
+
+        return edge_id, coord
+
+    def get_nearest_station(self, coordinate: Coordinate) -> str:
+        """Find nearest station to a coordinate"""
+        if not self.station_positions:
+            return "station_001"
+
+        nearest_station = None
+        nearest_distance = float('inf')
+
+        for station_id, pos in self.station_positions.items():
+            station_coord = Coordinate(pos[0], pos[1])
+            distance = coordinate.distance_to(station_coord)
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_station = station_id
+
+        return nearest_station or "station_001"
 
     def _initialize_default(self):
         """Deprecated: Logic removed to favor data-driven initialization"""

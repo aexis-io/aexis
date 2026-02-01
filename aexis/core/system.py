@@ -1,3 +1,10 @@
+from .network import (
+    Network,
+    NetworkAdjacency,
+    NetworkContext,
+    NetworkNode,
+    load_network_data,
+)
 import asyncio
 import json
 import logging
@@ -55,15 +62,6 @@ class AexisConfig:
                 if k not in ["debug", "network_data_path"]
             },
         }
-
-
-from .network import (
-    Network,
-    NetworkAdjacency,
-    NetworkContext,
-    NetworkNode,
-    load_network_data,
-)
 
 
 class SystemContext:
@@ -450,7 +448,10 @@ class AexisSystem:
         self.station_count = len(self.stations)
 
     async def _create_pods(self):
-        """Create pod instances with properly configured routing providers"""
+        """Create pod instances with network positioning on edges
+
+        PHASE 1: Pods spawn at random positions on network edges
+        """
         for i in range(1, self.pod_count + 1):
             pod_id = f"pod_{i:03d}"
 
@@ -465,14 +466,31 @@ class AexisSystem:
             else:
                 pod = PassengerPod(self.message_bus, pod_id, routing_provider)
 
-            # Assign initial station (distribute pods across stations)
-            station_index = (i - 1) % len(self.stations)
-            station_ids = list(self.stations.keys())
-            pod.location = station_ids[station_index]
+            # PHASE 1: Spawn pod at random network edge
+            edge_id, coordinate = self.network_context.spawn_pod_at_random_edge()
+
+            # Set initial position
+            if edge_id.startswith("station_"):
+                # Fallback: spawned at station
+                from .model import LocationDescriptor
+                pod.location_descriptor = LocationDescriptor(
+                    "station", node_id=edge_id, coordinate=coordinate)
+            else:
+                # Spawned on edge
+                from .model import LocationDescriptor
+                pod.current_edge = edge_id
+                pod.distance_on_edge = 0.0
+                pod.location_descriptor = LocationDescriptor(
+                    "edge",
+                    edge_id=edge_id,
+                    coordinate=coordinate,
+                    distance_on_edge=0.0
+                )
 
             self.pods[pod_id] = pod
             logger.info(
-                f"Created {pod.__class__.__name__}: {pod_id} at {pod.location}")
+                f"Created {pod.__class__.__name__}: {pod_id} at edge {edge_id} @ position ({coordinate.x}, {coordinate.y})"
+            )
 
     def _create_routing_provider(self, pod_id: str) -> RoutingProvider:
         """Create a configured routing provider for a pod using SystemContext
