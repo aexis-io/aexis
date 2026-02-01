@@ -40,6 +40,7 @@ let socket: WebSocket | null = null;
 let visualizer: NetworkVisualizer | null = null;
 let reconnectInterval: number | null = null;
 const MAX_EVENTS = 50;
+let posSocket: WebSocket | null = null;
 
 const elements: DOMElements = {
   activePods: document.getElementById('active-pods'),
@@ -67,11 +68,62 @@ function init(): void {
 
 // --- WebSocket Connection ---
 
+async function fetchInitialPodPositions(): Promise<void> {
+  // Fetch all pod positions on WebSocket connect and initialize visualizer with them
+  try {
+    const response = await fetch('/api/pods');
+    if (!response.ok) {
+      console.error('Failed to fetch pod positions:', response.statusText);
+      return;
+    }
+
+    const podsData = await response.json();
+
+    if (!visualizer) {
+      console.error('Visualizer not initialized');
+      return;
+    }
+
+    // Initialize each pod in the visualizer with current position and type
+    for (const [podId, podState] of Object.entries(podsData)) {
+      const pod = podState as Record<string, unknown>;
+
+      // Extract pod type - prefer direct pod_type field
+      const podType = (pod.pod_type as string)?.toLowerCase() === 'cargo'
+        ? 'cargo'
+        : 'passenger';
+
+      // Build position data compatible with handlePodPositionUpdate
+      const positionData = {
+        pod_id: podId,
+        location: pod.coordinate || {
+          location_type: 'station',
+          node_id: 'unknown',
+          coordinate: { x: 0, y: 0 },
+          distance_on_edge: 0
+        },
+        pod_type: podType,
+        status: pod.status || 'idle',
+        current_route: pod.current_route || null
+      };
+
+      // Initialize pod in visualizer
+      visualizer.handlePodPositionUpdate(positionData);
+    }
+
+    console.log(`Initialized ${Object.keys(podsData).length} pods from API`);
+  } catch (error) {
+    console.error('Error fetching initial pod positions:', error);
+  }
+}
+
 function connectWebSocket(): void {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws`;
+  const posUrl = `${protocol}//${window.location.host}/ws/positions`;
 
   socket = new WebSocket(wsUrl);
+  posSocket = new WebSocket(posUrl);
 
   socket.onopen = () => {
     updateStatus('Connected', 'online');
@@ -82,6 +134,32 @@ function connectWebSocket(): void {
     if (elements.offlineOverlay) {
       elements.offlineOverlay.classList.add('hidden');
     }
+  };
+
+  posSocket.onopen = () => {
+    console.log('Position WebSocket connected');
+    // Fetch initial pod positions and render them
+    fetchInitialPodPositions();
+  }
+
+  posSocket.onmessage = (event: MessageEvent) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === 'PodPositionUpdate' && visualizer) {
+        console.log(message);
+        visualizer.handlePodPositionUpdate(message.data);
+      }
+    } catch (e) {
+      console.error('Failed to parse position message:', e);
+    }
+  };
+
+  posSocket.onclose = () => {
+    console.log('Position stream disconnected');
+  };
+
+  posSocket.onerror = (error: Event) => {
+    console.error('Position stream error:', error);
   };
 
   socket.onmessage = (event: MessageEvent) => {

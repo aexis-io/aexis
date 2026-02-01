@@ -12,13 +12,13 @@ import os
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from .ai_provider import AIProviderFactory
 from .errors import handle_exception
 from .message_bus import MessageBus
 from .model import SystemSnapshot
-from .pod import CargoPod, PassengerPod
+from .pod import CargoPod, PassengerPod, Pod
 from .routing import RoutingProvider
 from .station import CargoGenerator, PassengerGenerator, Station
 
@@ -193,7 +193,7 @@ class AexisSystem:
             password=self.config.get('redis.password'),
         )
         self.ai_provider = None
-        self.pods = {}
+        self.pods: Mapping[str, Pod] =  {}
         self.stations = {}
         self.passenger_generator = None
         self.cargo_generator = None
@@ -481,25 +481,45 @@ class AexisSystem:
             edge_id, coordinate = self.network_context.spawn_pod_at_random_edge()
 
             # Set initial position
-            if edge_id.startswith("station_"):
+            # Check if we fell back to a station ID
+            if edge_id in self.network_context.station_positions:
                 # Fallback: spawned at station
                 from .model import LocationDescriptor
                 pod.location_descriptor = LocationDescriptor(
                     "station", node_id=edge_id, coordinate=coordinate)
             else:
-                # Spawned on edge
-                from .model import LocationDescriptor
-                pod.current_edge = edge_id
-                pod.distance_on_edge = 0.0
-                pod.location_descriptor = LocationDescriptor(
-                    "edge",
-                    edge_id=edge_id,
-                    coordinate=coordinate,
-                    distance_on_edge=0.0
-                )
+                # Spawned on edge - set up for continuous movement
+                from .model import LocationDescriptor, PodStatus
 
-                # PHASE 2 (TODO): Find nearest station and navigate there
-                # For now, just set current_edge so movement simulation can proceed
+                # Retrieve the actual EdgeSegment object
+                edge_segment = self.network_context.edges.get(edge_id)
+
+                if edge_segment:
+                    pod.current_segment = edge_segment
+                    # Approximate progress based on coordinate distance from start
+                    # (Simple linear approximation for initialization)
+                    pod.segment_progress = edge_segment.start_coord.distance_to(coordinate)
+
+                    pod.status = PodStatus.EN_ROUTE
+                    pod.location_descriptor = LocationDescriptor(
+                        "edge",
+                        edge_id=edge_id,
+                        coordinate=coordinate,
+                        distance_on_edge=pod.segment_progress
+                    )
+
+                    # Assign a random destination so it keeps moving after this edge
+                    # Find a random station that is NOT the start/end of current edge
+                    all_stations = list(self.network_context.station_positions.keys())
+                    if all_stations:
+                        import random
+                        dest = random.choice(all_stations)
+                        # We can't easily call navigate_to_station because we are mid-edge.
+                        # For now, let's just let it finish this edge.
+                        # Logic in 'update' handles route completion.
+                else:
+                     logger.warning(f"Spawned on unknown edge {edge_id}")
+
 
             self.pods[pod_id] = pod
             pod_type = "Cargo" if is_cargo else "Passenger"
@@ -627,33 +647,40 @@ class AexisSystem:
                 await asyncio.sleep(60)
 
     async def _simulate_pod_movement(self):
-        """Simulate pod movement along network edges at regular intervals
-
-        Phase 1: Pods move along edges and publish position updates for real-time UI rendering
+        """Simulate pod movement with continuous path integration
+        
+        Uses precise delta-time calculation to ensure smooth, speed-consistent movement
+        regardless of the actual update frequency (server lag resilience).
         """
-        update_interval = 0.1  # 100ms update frequency (10 Hz)
+        target_interval = 0.1  # Target 10 Hz
+        loop = asyncio.get_running_loop()
+        last_time = loop.time()
 
         while self.running:
             try:
-                current_time = datetime.now()
-
-                # Update pod positions along edges
+                now = loop.time()
+                dt = now - last_time
+                last_time = now
+                
+                # Cap dt to avoid massive jumps if thread hangs (e.g. max 1.0s)
+                dt = min(dt, 1.0)
+                print(f"Updating pods position")
+                # Update all pods
+                # In Phase 2, this could be parallelized if pod count > 1000
                 for pod in self.pods.values():
-                    if pod.current_edge:
-                        # Move pod along edge
-                        reached_end = await pod.move_along_edge(update_interval)
+                    await pod.update(dt)
 
-                        if reached_end:
-                            # Pod reached end of edge, will navigate to next segment in Phase 2
-                            logger.debug(
-                                f"Pod {pod.pod_id} reached edge endpoint")
-
-                await asyncio.sleep(update_interval)
+                # Sleep strict remainder to maintain roughly target rate
+                # processing_time = loop.time() - now
+                # sleep_time = max(0.01, target_interval - processing_time)
+                
+                # Simple sleep is fine for now, dt handles the physics correctness
+                await asyncio.sleep(target_interval)
 
             except Exception as e:
                 logger.debug(
                     f"Pod movement simulation error: {e}", exc_info=True)
-                await asyncio.sleep(update_interval)
+                await asyncio.sleep(target_interval)
 
     async def _update_metrics(self):
         """Update system metrics"""

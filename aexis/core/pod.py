@@ -1,8 +1,9 @@
 import logging
 import sys
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Deque
 
 from .message_bus import EventProcessor, MessageBus
 from .model import (
@@ -15,6 +16,7 @@ from .model import (
     PodStatusUpdate,
     Route,
     Coordinate,
+    EdgeSegment,
 )
 from .routing import OfflineRouter, RoutingProvider
 
@@ -59,10 +61,12 @@ class Pod(EventProcessor):
         # PHASE 1: Position tracking on network
         self.location_descriptor = LocationDescriptor(
             "station", "station_001")  # Default
-        self.current_edge: str | None = None  # Edge ID if on edge
-        # Progress along edge (0.0 to edge.length)
-        self.distance_on_edge: float = 0.0
-        self.speed: float = 10.0  # Units per second (configurable)
+        
+        # Continuous Navigation State
+        self.route_queue: Deque[EdgeSegment] = deque()
+        self.current_segment: Optional[EdgeSegment] = None
+        self.segment_progress: float = 0.0  # Meters traveled on current segment
+        self.speed: float = 20.0  # Increased speed for better responsiveness (m/s)
 
         self.current_route: Route | None = None
         self.movement_start_time = None
@@ -196,6 +200,9 @@ class Pod(EventProcessor):
                 return
 
             if self.current_route and self.current_route.stations:
+                # Hydrate route into edge segments
+                await self._hydrate_route(self.current_route.stations)
+                
                 self.status = PodStatus.EN_ROUTE
                 self.movement_start_time = datetime.now(UTC)
                 self.estimated_arrival = self.movement_start_time + timedelta(
@@ -213,6 +220,45 @@ class Pod(EventProcessor):
             logger.error(
                 f"Pod {self.pod_id} route assignment error: {e}", exc_info=True
             )
+
+    async def _hydrate_route(self, stations: list[str]):
+        """Convert list of station IDs into a queue of EdgeSegments for navigation"""
+        from .network import NetworkContext
+        network = NetworkContext.get_instance()
+        
+        self.route_queue.clear()
+        self.current_segment = None
+        self.segment_progress = 0.0
+        
+        if len(stations) < 2:
+            return
+
+        for i in range(len(stations) - 1):
+            start = stations[i]
+            end = stations[i+1]
+            edge_id = f"{start}->{end}"
+            
+            # Check edge existence
+            if edge_id in network.edges:
+                self.route_queue.append(network.edges[edge_id])
+            else:
+                # Fallback: Create synthetic edge if missing from map (robustness)
+                logger.warning(f"Pod {self.pod_id} hydrating synthetic edge {edge_id}")
+                p1 = network.station_positions.get(start, (0,0))
+                p2 = network.station_positions.get(end, (0,0))
+                synthetic_edge = EdgeSegment(
+                    segment_id=edge_id,
+                    start_node=start,
+                    end_node=end,
+                    start_coord=Coordinate(p1[0], p1[1]),
+                    end_coord=Coordinate(p2[0], p2[1])
+                )
+                self.route_queue.append(synthetic_edge)
+        
+        # Prime the first segment
+        if self.route_queue:
+            self.current_segment = self.route_queue.popleft()
+            self.segment_progress = 0.0
 
     async def _handle_congestion_alert(self, data: dict):
         """Handle congestion alerts"""
@@ -349,60 +395,97 @@ class Pod(EventProcessor):
     # PHASE 1: Movement Simulation on Network Edges
     # ========================================================================
 
-    async def move_along_edge(self, time_delta: float) -> bool:
-        """Simulate pod movement along current edge
+    # ========================================================================
+    # PHASE 1: Movement Simulation on Network Edges
+    # ========================================================================
 
-        Args:
-            time_delta: Time elapsed since last update (seconds)
-
-        Returns:
-            True if pod reached destination, False if still moving
+    async def update(self, dt: float) -> bool:
+        """Update pod physics for time step dt
+        
+        Implements Continuous Path Integration:
+        - Consumes distance from current segment
+        - Overflows to next segment in queue if dt > remaining length
+        - Handles precise position interpolation
         """
-        if not self.current_edge or self.status != PodStatus.EN_ROUTE:
+        if self.status != PodStatus.EN_ROUTE or not self.current_segment:
             return False
 
-        try:
-            from .network import NetworkContext
-            network = NetworkContext.get_instance()
+        dist_to_travel = self.speed * dt
+        # Safety cap to prevent warping across map in one lag spike (e.g. max 100m/tick)
+        dist_to_travel = min(dist_to_travel, 100.0) 
 
-            if self.current_edge not in network.edges:
-                logger.warning(
-                    f"Pod {self.pod_id}: invalid edge {self.current_edge}")
-                return False
-
-            edge = network.edges[self.current_edge]
-            distance_traveled = self.speed * time_delta
-            self.distance_on_edge += distance_traveled
-
-            # Check if reached end of edge
-            if self.distance_on_edge >= edge.length:
-                # Reached destination node
-                self.distance_on_edge = edge.length
-                self.location_descriptor = LocationDescriptor(
-                    "station",
-                    node_id=edge.end_node,
-                    coordinate=edge.end_coord
-                )
-                self.current_edge = None
+        while dist_to_travel > 0:
+            if not self.current_segment:
+                # End of route reached
+                await self._handle_route_completion()
                 return True
+
+            remaining_on_edge = self.current_segment.length - self.segment_progress
+            
+            if dist_to_travel >= remaining_on_edge:
+                # Overflow case: Complete this edge and continue to next
+                dist_to_travel -= remaining_on_edge
+                self._advance_segment()
             else:
-                # Still on edge - update position
-                coord = edge.get_point_at_distance(self.distance_on_edge)
-                self.location_descriptor = LocationDescriptor(
-                    "edge",
-                    edge_id=self.current_edge,
-                    coordinate=coord,
-                    distance_on_edge=self.distance_on_edge
-                )
+                # Normal case: Move along current edge
+                self.segment_progress += dist_to_travel
+                dist_to_travel = 0
+        
+        # Update observable location state
+        self._update_location_descriptor()
+        
+        # Publish exactly one position update per physics tick
+        # This gives the UI the final resolved position after all internal edge transitions
+        print(f"Publishing position update for pod {self.pod_id}, ({self.location_descriptor.coordinate.x}, {self.location_descriptor.coordinate.y})")
+        await self._publish_position_update()
+        return False
 
-                # Publish real-time position update for UI
-                await self._publish_position_update()
-                return False
+    def _advance_segment(self):
+        """Move to next segment in queue"""
+        if self.route_queue:
+            self.current_segment = self.route_queue.popleft()
+            self.segment_progress = 0.0
+        else:
+            # No more segments, we have arrived at final destination node of the last segment
+            # Mark as finished so next loop iteration catches it
+            self.current_segment = None
 
-        except Exception as e:
-            logger.error(
-                f"Pod {self.pod_id} movement error: {e}", exc_info=True)
-            return False
+    def _update_location_descriptor(self):
+        """Update the public location descriptor based on internal physics state"""
+        if not self.current_segment:
+            return
+
+        # Interpolate exact position
+        current_coord = self.current_segment.get_point_at_distance(self.segment_progress)
+        
+        self.location_descriptor = LocationDescriptor(
+            location_type="edge",
+            edge_id=self.current_segment.segment_id,
+            coordinate=current_coord,
+            distance_on_edge=self.segment_progress
+        )
+
+    async def _handle_route_completion(self):
+        """Handle arrival at destination"""
+        self.status = PodStatus.IDLE
+        self.segment_progress = 0.0
+        
+        # Snap to final station coordinate
+        if self.current_route and self.current_route.stations:
+            final_station = self.current_route.stations[-1]
+            from .network import NetworkContext
+            nc = NetworkContext.get_instance()
+            pos = nc.station_positions.get(final_station, (0,0))
+            
+            self.location_descriptor = LocationDescriptor(
+                location_type="station",
+                node_id=final_station,
+                coordinate=Coordinate(pos[0], pos[1])
+            )
+        
+        await self._publish_position_update()
+        await self._publish_status_update()
+        logger.info(f"Pod {self.pod_id} arrived at destination")
 
     async def navigate_to_station(self, target_station: str) -> bool:
         """Start navigation from current position to target station
@@ -438,24 +521,29 @@ class Pod(EventProcessor):
                 if len(path) < 2:
                     return False
 
-                # Start navigation on first edge
-                first_edge_id = f"{path[0]}->{path[1]}"
-                if first_edge_id in network.edges:
-                    self.current_edge = first_edge_id
-                    self.distance_on_edge = 0.0
+                # Start navigation using new system
+                # Convert path to segments
+                # Since we are already in async method, we can hydrate immediately
+                
+                # Create a mock route object for hydration
+                dummy_route = Route(
+                    route_id=f"nav_{datetime.now().timestamp()}",
+                    stations=path,
+                    estimated_duration=10 # Estimation...
+                )
+                self.current_route = dummy_route
+                
+                # Hydrate
+                await self._hydrate_route(path)
+                
+                if self.current_segment:
                     self.status = PodStatus.EN_ROUTE
-
-                    # Store remaining path for decision making
-                    self.current_route = Route(
-                        route_id=f"nav_{datetime.now().timestamp()}",
-                        stations=path,
-                        estimated_duration=int(sum(network.network_graph[path[i]][path[i+1]]["weight"]
-                                                   for i in range(len(path)-1)) / self.speed / 60)
-                    )
                     logger.info(
                         f"Pod {self.pod_id} starting navigation to {target_station}")
-                    await self._publish_position_update()
                     return True
+                return False
+
+                return False
             except nx.NetworkXNoPath:
                 logger.warning(
                     f"Pod {self.pod_id}: no path to {target_station}")
@@ -492,6 +580,7 @@ class Pod(EventProcessor):
 
         return {
             "pod_id": self.pod_id,
+            "pod_type": self._get_pod_type().value,
             "type": self.__class__.__name__,
             "status": self.status.value,
             "location": location_str,

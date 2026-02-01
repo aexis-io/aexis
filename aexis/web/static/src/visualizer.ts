@@ -32,7 +32,7 @@ interface PathSpine {
   startNodeId: string;
   endNodeId: string;
   segments: PathSegment[];
-  totalLength: number; 
+  totalLength: number;
 }
 
 /**
@@ -49,6 +49,7 @@ interface SpineSample {
 interface Pod {
   id: string;
   gfx: PIXI.Graphics;
+  podType: 'cargo' | 'passenger';
   spineId: string;
   distanceAlongPath: number;
   speed: number;
@@ -158,7 +159,7 @@ class NetworkVisualizer {
     this.nodes = new Map();
     this.pods = new Map();
     this.stationPayloads = new Map();
- 
+
     // Layers
     this.viewport = null;
     this.gridLayer = null;
@@ -206,6 +207,8 @@ class NetworkVisualizer {
 
     // Initial draw
     this.drawGrid();
+    this.drawSpines();
+    this.drawNodes();
 
     // Tick
     this.app.ticker.add((delta: number) => this.animate(delta));
@@ -216,7 +219,7 @@ class NetworkVisualizer {
       this.drawGrid();
       this.drawSpines();
     });
-      }
+  }
 
   setupInteraction(): void {
     if (!this.app) return;
@@ -242,17 +245,17 @@ class NetworkVisualizer {
     let lastMouse = { x: 0, y: 0 };
 
     this.app.stage.on('pointerdown', (e: PIXI.FederatedPointerEvent) => {
-        isPanDragging = true;
-        lastMouse = { x: e.global.x, y: e.global.y };
+      isPanDragging = true;
+      lastMouse = { x: e.global.x, y: e.global.y };
     });
     this.app.stage.on('pointerup', () => isPanDragging = false);
     this.app.stage.on('pointermove', (e: PIXI.FederatedPointerEvent) => {
-        if (isPanDragging) {
-            this.pan.x += e.global.x - lastMouse.x;
-            this.pan.y += e.global.y - lastMouse.y;
-            lastMouse = { x: e.global.x, y: e.global.y };
-            this.updateViewport();
-        }
+      if (isPanDragging) {
+        this.pan.x += e.global.x - lastMouse.x;
+        this.pan.y += e.global.y - lastMouse.y;
+        lastMouse = { x: e.global.x, y: e.global.y };
+        this.updateViewport();
+      }
     });
   }
 
@@ -315,8 +318,79 @@ class NetworkVisualizer {
   // Stubs for future implementation
   updateData(data: Record<string, unknown>): void {
     if ((data as any).pods) {
-        this.syncPods((data as any).pods);
+      this.syncPods((data as any).pods);
     }
+  }
+
+  /**
+   * Handle real-time pod position updates from WebSocket
+   */
+  handlePodPositionUpdate(positionData: any): void {
+    const podId = positionData.pod_id;
+    const podType = positionData.pod_type as 'cargo' | 'passenger';
+    const location = positionData.location;
+
+    let pod = this.pods.get(podId);
+
+    if (!pod) {
+      // Create new pod if it doesn't exist
+      pod = this.createPod(podId, {
+        pod_type: podType,
+        spine_id: location?.edge_id || "",
+        distance: location?.distance_on_edge || 0
+      });
+      this.pods.set(podId, pod);
+    }
+
+    // Update pod type and color if changed
+    if (pod.podType !== podType) {
+      pod.podType = podType;
+      this.updatePodColor(pod);
+    }
+
+    // Update position data
+    if (location) {
+      pod.data = {
+        ...pod.data,
+        location: location,
+        pod_type: podType
+      };
+
+      // Update spine ID if on edge
+      if (location.edge_id && pod.spineId !== location.edge_id) {
+        pod.spineId = location.edge_id;
+      }
+
+      // Update distance along path
+      if (typeof location.distance_on_edge === 'number') {
+        pod.targetDistance = location.distance_on_edge;
+        pod.lastUpdate = Date.now();
+
+        // Snap if jump is too large
+        if (Math.abs(pod.targetDistance - pod.distanceAlongPath) > 100) {
+          pod.distanceAlongPath = pod.targetDistance;
+        }
+      }
+    }
+  }
+
+  updatePodColor(pod: Pod): void {
+    // Update pod graphics color based on pod type (cargo=orange, passenger=teal)
+    console.log(`Drawing pod: ${pod}`);
+    const podColor = pod.podType === 'cargo' ? 0xff8800 : 0x00fbff;
+
+    // Redraw pod with new color
+    pod.gfx.clear();
+
+    // Core pod circle
+    pod.gfx.beginFill(podColor, 1);
+    pod.gfx.drawCircle(0, 0, 13);
+    pod.gfx.endFill();
+
+    // Glow aura based on pod type
+    pod.gfx.beginFill(podColor, 0.3);
+    pod.gfx.drawCircle(0, 0, 16);
+    pod.gfx.endFill();
   }
 
   /**
@@ -326,20 +400,20 @@ class NetworkVisualizer {
     const eventType = eventData.event_type || '';
 
     console.log('inbound event : ', eventType)
-    
+
     // Payload arrival at station
     if (eventType.includes('PassengerArrival')) {
-        this.addStationPayload(eventData.station_id || eventData.origin, 'passenger', eventData.passenger_id || eventData.event_id);
+      this.addStationPayload(eventData.station_id || eventData.origin, 'passenger', eventData.passenger_id || eventData.event_id);
     } else if (eventType.includes('CargoRequest')) {
-        console.log('Adding new arriving cargo')
-        this.addStationPayload(eventData.station_id || eventData.origin, 'cargo', eventData.cargo_id || eventData.event_id);
+      console.log('Adding new arriving cargo')
+      this.addStationPayload(eventData.station_id || eventData.origin, 'cargo', eventData.cargo_id || eventData.event_id);
     }
-    
+
     // Payload loaded onto pod (departure)
     if (eventType.includes('passenger') && eventType.includes('loaded')) {
-        this.removeStationPayload(eventData.passenger_id || eventData.event_id);
+      this.removeStationPayload(eventData.passenger_id || eventData.event_id);
     } else if (eventType.includes('cargo') && eventType.includes('loaded')) {
-        this.removeStationPayload(eventData.cargo_id || eventData.event_id);
+      this.removeStationPayload(eventData.cargo_id || eventData.event_id);
     }
   }
 
@@ -352,148 +426,153 @@ class NetworkVisualizer {
     // Create visual indicator
     const gfx = new PIXI.Graphics();
     const color = type === 'passenger' ? 0xffff00 : 0xaa00ff; // Yellow for passenger, purple for cargo
-    
+
     // Small circle offset from station center
     const existingCount = Array.from(this.stationPayloads.values()).filter(p => p.stationId === stationId).length;
     const angle = (existingCount * 0.5) + Math.random() * 0.3;
     const radius = 20 + existingCount * 3;
     const offsetX = Math.cos(angle) * radius;
     const offsetY = Math.sin(angle) * radius;
-    
+
     gfx.beginFill(color, 0.8);
     gfx.drawCircle(0, 0, 5);
     gfx.endFill();
-    
+
     gfx.beginFill(0xffffff, 1);
     gfx.drawCircle(0, 0, 2);
     gfx.endFill();
-    
+
     gfx.position.set(node.x + offsetX, node.y + offsetY);
     this.indicatorLayer.addChild(gfx);
-    
+
     this.stationPayloads.set(payloadId, {
-        id: payloadId,
-        stationId,
-        type,
-        gfx,
-        createdAt: Date.now()
+      id: payloadId,
+      stationId,
+      type,
+      gfx,
+      createdAt: Date.now()
     });
   }
 
   removeStationPayload(payloadId: string): void {
     const payload = this.stationPayloads.get(payloadId);
     if (payload) {
-        payload.gfx.destroy();
-        this.stationPayloads.delete(payloadId);
+      payload.gfx.destroy();
+      this.stationPayloads.delete(payloadId);
     }
   }
 
   syncPods(podsData: Record<string, any>): void {
     const now = Date.now();
-    
+
     // 1. Mark all existing pods as unseen
     const unseenIds = new Set(this.pods.keys());
 
     for (const [id, data] of Object.entries(podsData)) {
-        let pod = this.pods.get(id);
-        unseenIds.delete(id);
+      let pod = this.pods.get(id);
+      unseenIds.delete(id);
 
-        if (!pod) {
-            pod = this.createPod(id, data);
-            this.pods.set(id, pod);
+      if (!pod) {
+        pod = this.createPod(id, data);
+        this.pods.set(id, pod);
+      }
+
+      // Update authoritative state
+      pod.data = data;
+
+      // If spine changed, jump to it (or handle transition if advanced)
+      if (data.spine_id && pod.spineId !== data.spine_id) {
+        pod.spineId = data.spine_id;
+        // When switching spines, we might want to snap or interpolate.
+        // For now, snap to ensure correctness.
+        pod.distanceAlongPath = data.distance ?? 0;
+      }
+
+      // Update target for interpolation
+      // Assuming backend sends 'distance' property
+      if (typeof data.distance === 'number') {
+        // Simple interpolation setup:
+        // We know where it is NOW (visual), and where server says it is (target).
+        pod.targetDistance = data.distance;
+        pod.lastUpdate = now;
+
+        // If the jump is too large (e.g. initial load), snap
+        if (Math.abs(pod.targetDistance - pod.distanceAlongPath) > 100) {
+          pod.distanceAlongPath = pod.targetDistance;
         }
-        
-        // Update authoritative state
-        pod.data = data;
-        
-        // If spine changed, jump to it (or handle transition if advanced)
-        if (data.spine_id && pod.spineId !== data.spine_id) {
-            pod.spineId = data.spine_id;
-            // When switching spines, we might want to snap or interpolate.
-            // For now, snap to ensure correctness.
-            pod.distanceAlongPath = data.distance ?? 0;
-        }
-        
-        // Update target for interpolation
-        // Assuming backend sends 'distance' property
-        if (typeof data.distance === 'number') {
-            // Simple interpolation setup:
-            // We know where it is NOW (visual), and where server says it is (target).
-            pod.targetDistance = data.distance;
-            pod.lastUpdate = now;
-            
-            // If the jump is too large (e.g. initial load), snap
-            if (Math.abs(pod.targetDistance - pod.distanceAlongPath) > 100) {
-                pod.distanceAlongPath = pod.targetDistance;
-            }
-        }
+      }
     }
-    
+
     // 2. Remove stale pods
     unseenIds.forEach(id => {
-        const pod = this.pods.get(id);
-        if (pod) {
-            pod.gfx.destroy(); // Remove from scene
-            this.pods.delete(id);
-        }
+      const pod = this.pods.get(id);
+      if (pod) {
+        pod.gfx.destroy(); // Remove from scene
+        this.pods.delete(id);
+      }
     });
   }
 
   createPod(id: string, data: any): Pod {
+    const podType: 'cargo' | 'passenger' = data.pod_type === 'cargo' ? 'cargo' : 'passenger';
+    const podColor = podType === 'cargo' ? 0xff8800 : 0x00fbff; // Orange for cargo, teal for passenger
+
     const gfx = new PIXI.Graphics();
-    
-    // Tiny TRON pod
-    gfx.beginFill(0xffffff, 1);
+
+    // Core pod circle with color based on type
+    gfx.beginFill(podColor, 1);
     gfx.drawCircle(0, 0, 3);
     gfx.endFill();
-    
-    gfx.beginFill(0x00fbff, 0.4);
+
+    // Glow aura
+    gfx.beginFill(podColor, 0.3);
     gfx.drawCircle(0, 0, 6);
     gfx.endFill();
 
     if (this.podLayer) this.podLayer.addChild(gfx);
 
     return {
-        id,
-        gfx,
-        spineId: data.spine_id || "",
-        distanceAlongPath: data.distance || 0,
-        targetDistance: data.distance || 0,
-        speed: 0, // Speed is derived from server updates now
-        lastUpdate: Date.now(),
-        data: data
+      id,
+      gfx,
+      podType,
+      spineId: data.spine_id || "",
+      distanceAlongPath: data.distance || 0,
+      targetDistance: data.distance || 0,
+      speed: 0, // Speed is derived from server updates now
+      lastUpdate: Date.now(),
+      data: data
     };
   }
 
   animate(delta: number): void {
     // interpolation factor (tunable)
-    const lerpFactor = 0.1; 
+    const lerpFactor = 0.1;
 
     this.pods.forEach(pod => {
-        const spine = this.spines.get(pod.spineId);
-        if (!spine) return;
+      const spine = this.spines.get(pod.spineId);
+      if (!spine) return;
 
-        // Simple Linear Interpolation towards server state
-        // This smooths out the jitter from 1-2s polling intervals
-        const diff = pod.targetDistance - pod.distanceAlongPath;
-        
-        // If distance is small, just move; if large (wrap around?), snap.
-        // Assuming spines are linear and don't loop internally.
-        if (Math.abs(diff) > 0.1) {
-            pod.distanceAlongPath += diff * lerpFactor;
-        } else {
-            pod.distanceAlongPath = pod.targetDistance;
-        }
+      // Simple Linear Interpolation towards server state
+      // This smooths out the jitter from 1-2s polling intervals
+      const diff = pod.targetDistance - pod.distanceAlongPath;
 
-        // authoritative sample & render
-        // Even if halted, we update position (it stays at endpoint)
-        const sample = this.sampleSpine(spine, pod.distanceAlongPath);
-        pod.gfx.position.set(sample.position.x, sample.position.y);
-        
-        // Orient towards tangent
-        // Optimization: Don't rotate if barely moving to avoid jitter
-        // But for TRON lines, constant rotation based on tangent is fine
-        pod.gfx.rotation = Math.atan2(sample.tangent.y, sample.tangent.x);
+      // If distance is small, just move; if large (wrap around?), snap.
+      // Assuming spines are linear and don't loop internally.
+      if (Math.abs(diff) > 0.1) {
+        pod.distanceAlongPath += diff * lerpFactor;
+      } else {
+        pod.distanceAlongPath = pod.targetDistance;
+      }
+
+      // authoritative sample & render
+      // Even if halted, we update position (it stays at endpoint)
+      const sample = this.sampleSpine(spine, pod.distanceAlongPath);
+      pod.gfx.position.set(sample.position.x, sample.position.y);
+
+      // Orient towards tangent
+      // Optimization: Don't rotate if barely moving to avoid jitter
+      // But for TRON lines, constant rotation based on tangent is fine
+      pod.gfx.rotation = Math.atan2(sample.tangent.y, sample.tangent.x);
     });
   }
 
@@ -506,14 +585,14 @@ class NetworkVisualizer {
     try {
       const response = await fetch('/api/network');
       const data = await response.json() as NetworkData;
-      
+
       // Apply layout scale to coordinates if needed, or assume they are pre-scaled
       // For this network.json, coordinates look like -700, 800, so likely no scale needed or scale = 1
       if (this.config.layoutScale !== 1) {
-          data.nodes.forEach(n => {
-              n.coordinate.x *= this.config.layoutScale;
-              n.coordinate.y *= this.config.layoutScale;
-          });
+        data.nodes.forEach(n => {
+          n.coordinate.x *= this.config.layoutScale;
+          n.coordinate.y *= this.config.layoutScale;
+        });
       }
 
       this.generateLayout(data);
@@ -525,63 +604,63 @@ class NetworkVisualizer {
   generateLayout(data: NetworkData): void {
     this.spines.clear();
     this.nodes.clear();
-    
+
     if (!data.nodes) return;
 
     // 1. Create Nodes
     data.nodes.forEach((n) => {
-        this.nodes.set(n.id, {
-            id: n.id,
-            x: n.coordinate.x,
-            y: n.coordinate.y,
-            connectedSpines: []
-        });
+      this.nodes.set(n.id, {
+        id: n.id,
+        x: n.coordinate.x,
+        y: n.coordinate.y,
+        connectedSpines: []
+      });
     });
 
     // 2. Create Spines from Adjacency (Edges)
     const seenEdges = new Set<string>();
 
     data.nodes.forEach((sourceNode) => {
-        if (!sourceNode.adj) return;
+      if (!sourceNode.adj) return;
 
-        const startNode = this.nodes.get(sourceNode.id);
-        if (!startNode) return;
+      const startNode = this.nodes.get(sourceNode.id);
+      if (!startNode) return;
 
-        sourceNode.adj.forEach((adj) => {
-            const targetId = adj.node_id;
-            const endNode = this.nodes.get(targetId);
-            
-            if (!endNode) return;
+      sourceNode.adj.forEach((adj) => {
+        const targetId = adj.node_id;
+        const endNode = this.nodes.get(targetId);
 
-            // Simple deduplication: "minId-maxId"
-            // For routing, we treat this edge as bidirectional conceptually, 
-            // but our simulation moves along one vector.
-            // To allow bidirectional travel, we might need TWO spines (A->B and B->A) 
-            // OR intelligent traversal that handles negative speed.
-            // Simplest for now: Create two directed spines for every link so pods can flow both ways easily.
-            // Wait, typically edges are undirected. Let's stick to unique edges and handle "reverse" traversal later.
-            // Actually, for "pickNextRoute" to work easily with "distanceAlongPath", 
-            // it's easiest if spines are directed paths A->B.
-            // If the graph is undirected, we should probably generate TWO directed spines per adjacency
-            // so we don't have to handle "moving backwards" logic right now.
-            
-            // Let's create directed spines for EVERY adjacency.
-            // edgeId = "source->target"
-            const edgeId = `${sourceNode.id}->${targetId}`;
-            
-            // Generate geometry (Octilinear path between nodes)
-            const pathPoints = this.getOctilinearPath(startNode.x, startNode.y, endNode.x, endNode.y);
-            
-            const spine = this.createSpine(pathPoints, edgeId, startNode, endNode);
-            this.spines.set(edgeId, spine);
-            
-            // Register connection
-            startNode.connectedSpines.push(edgeId);
-            // We don't push to endNode because this spine flows AWAY from startNode.
-            // endNode will have its own outgoing spine created when we iterate over *its* adj list.
-        });
+        if (!endNode) return;
+
+        // Simple deduplication: "minId-maxId"
+        // For routing, we treat this edge as bidirectional conceptually, 
+        // but our simulation moves along one vector.
+        // To allow bidirectional travel, we might need TWO spines (A->B and B->A) 
+        // OR intelligent traversal that handles negative speed.
+        // Simplest for now: Create two directed spines for every link so pods can flow both ways easily.
+        // Wait, typically edges are undirected. Let's stick to unique edges and handle "reverse" traversal later.
+        // Actually, for "pickNextRoute" to work easily with "distanceAlongPath", 
+        // it's easiest if spines are directed paths A->B.
+        // If the graph is undirected, we should probably generate TWO directed spines per adjacency
+        // so we don't have to handle "moving backwards" logic right now.
+
+        // Let's create directed spines for EVERY adjacency.
+        // edgeId = "source->target"
+        const edgeId = `${sourceNode.id}->${targetId}`;
+
+        // Generate geometry (Octilinear path between nodes)
+        const pathPoints = this.getOctilinearPath(startNode.x, startNode.y, endNode.x, endNode.y);
+
+        const spine = this.createSpine(pathPoints, edgeId, startNode, endNode);
+        this.spines.set(edgeId, spine);
+
+        // Register connection
+        startNode.connectedSpines.push(edgeId);
+        // We don't push to endNode because this spine flows AWAY from startNode.
+        // endNode will have its own outgoing spine created when we iterate over *its* adj list.
+      });
     });
-    
+
     // Inject Mock Pods: REMOVED
     // We now rely on the backend to send pods in updateData()
     this.pods.clear();
@@ -592,7 +671,7 @@ class NetworkVisualizer {
     this.drawNodes();
   }
 
-  setPaused(p: boolean): void {}
+  setPaused(p: boolean): void { }
   resetView(): void {
     this.zoom = 1.0;
     this.pan = { x: this.app?.screen.width || 0 / 2, y: this.app?.screen.height || 0 / 2 };
@@ -656,7 +735,7 @@ class NetworkVisualizer {
       if (accumulatedDist + seg.length >= clampedDist) {
         const localDist = clampedDist - accumulatedDist;
         const t = localDist / seg.length;
-        
+
         return {
           position: {
             x: seg.start.x + (seg.end.x - seg.start.x) * t,
@@ -693,40 +772,40 @@ class NetworkVisualizer {
 
     // We can draw a single centered tube, or multiple parallel ones
     const offsets = [0]; // Just center for now, but we can add [-5, 5] for double lines
-    
+
     offsets.forEach(offset => {
-        // 1. Layered Glows
-        // this.config.tube.glowWidths.forEach((width, idx) => {
-        //     this.spineLayer!.lineStyle(width, this.config.tube.glowColor, this.config.tube.glowAlphas[idx]);
-        //     this.drawLayeredPath(spine, offset);
-        // });
+      // 1. Layered Glows
+      // this.config.tube.glowWidths.forEach((width, idx) => {
+      //     this.spineLayer!.lineStyle(width, this.config.tube.glowColor, this.config.tube.glowAlphas[idx]);
+      //     this.drawLayeredPath(spine, offset);
+      // });
 
-        // // 2. Core Brilliant Line
-        // this.spineLayer.lineStyle(this.config.tube.width, 0xffffff, 0.9);
-        // this.drawLayeredPath(spine, offset);
+      // // 2. Core Brilliant Line
+      // this.spineLayer.lineStyle(this.config.tube.width, 0xffffff, 0.9);
+      // this.drawLayeredPath(spine, offset);
 
-        // 3. Primary Color Inner Line
-        this.spineLayer.lineStyle(this.config.tube.width - 1, color, 1);
-        this.drawLayeredPath(spine, offset);
+      // 3. Primary Color Inner Line
+      this.spineLayer.lineStyle(this.config.tube.width - 1, color, 1);
+      this.drawLayeredPath(spine, offset);
     });
   }
 
   drawLayeredPath(spine: PathSpine, offset: number): void {
     if (!this.spineLayer || spine.segments.length === 0) return;
-    
-    for (let i = 0; i < spine.segments.length; i++) {
-        const seg = spine.segments[i];
-        const normal = { x: -seg.tangent.y, y: seg.tangent.x };
-        
-        const startX = seg.start.x + normal.x * offset;
-        const startY = seg.start.y + normal.y * offset;
-        const endX = seg.end.x + normal.x * offset;
-        const endY = seg.end.y + normal.y * offset;
 
-        if (i === 0) {
-            this.spineLayer.moveTo(startX, startY);
-        }
-        this.spineLayer.lineTo(endX, endY);
+    for (let i = 0; i < spine.segments.length; i++) {
+      const seg = spine.segments[i];
+      const normal = { x: -seg.tangent.y, y: seg.tangent.x };
+
+      const startX = seg.start.x + normal.x * offset;
+      const startY = seg.start.y + normal.y * offset;
+      const endX = seg.end.x + normal.x * offset;
+      const endY = seg.end.y + normal.y * offset;
+
+      if (i === 0) {
+        this.spineLayer.moveTo(startX, startY);
+      }
+      this.spineLayer.lineTo(endX, endY);
     }
   }
 
@@ -736,16 +815,16 @@ class NetworkVisualizer {
   drawNodes(): void {
     if (!this.nodeLayer) return;
     this.nodeLayer.clear();
-    
+
     // Simple glowing dot for nodes
     for (const node of this.nodes.values()) {
-        this.nodeLayer.beginFill(0x00fbff, 0.3);
-        this.nodeLayer.drawCircle(node.x, node.y, 12);
-        this.nodeLayer.endFill();
-        
-        this.nodeLayer.beginFill(0xffffff, 1);
-        this.nodeLayer.drawCircle(node.x, node.y, 3.5);
-        this.nodeLayer.endFill();
+      this.nodeLayer.beginFill(0x00fbff, 0.3);
+      this.nodeLayer.drawCircle(node.x, node.y, 12);
+      this.nodeLayer.endFill();
+
+      this.nodeLayer.beginFill(0xffffff, 1);
+      this.nodeLayer.drawCircle(node.x, node.y, 3.5);
+      this.nodeLayer.endFill();
     }
   }
 }

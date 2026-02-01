@@ -103,7 +103,7 @@ class WebDashboard:
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket endpoint for real-time updates"""
-            print(f'Hittint that ol ws {websocket.items()}')
+            print(f'Hitting that ol ws {websocket.items()}')
             await self._handle_websocket(websocket)
 
         @self.app.websocket("/ws/positions")

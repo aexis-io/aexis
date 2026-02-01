@@ -24,12 +24,15 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "hypothesis>=6.92.0",
     "ruff>=0.14.14",
+    "debugpy>=1.8.20",
+    "pytest-mock>=3.15.1",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["aexis/tests"]
+testpaths = ["tests"]
+addopts = "-s"
 
 
 [tool.setuptools.packages.find]

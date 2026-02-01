@@ -127,12 +127,6 @@ class NetworkContext:
         # Create edge segments for movement simulation
         self._build_edge_segments()
 
-        # Recalculate weights based on Euclidean distance for consistency
-        for u, v in self.network_graph.edges():
-            dist = self.calculate_distance(u, v)
-            if dist > 0:
-                self.network_graph[u][v]["weight"] = dist
-
     def _build_edge_segments(self):
         """Build bidirectional EdgeSegment objects for all edges in the graph"""
         for u, v in self.network_graph.edges():

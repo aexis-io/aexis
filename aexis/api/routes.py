@@ -314,7 +314,7 @@ class SystemAPI:
                     self.position_subscribers.remove(websocket)
 
     def get_network_data(self) -> dict | None:
-        path = os.getenv("AEXIS_NETWORK_DATA", "aexis/network.json")
+        path = os.getenv("AEXIS_NETWORK_DATA", "network.json")
         return load_network_data(path)
 
     def get_app(self) -> FastAPI:
