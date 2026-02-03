@@ -58,6 +58,7 @@ interface Pod {
   // For interpolation
   targetDistance: number;
   lastUpdate: number;
+  velocity: number; // Current server-reported velocity
 }
 
 interface VisualizerConfig {
@@ -128,6 +129,7 @@ interface PodPositionUpdate {
   pod_id: string;
   source: string;
   status: 'en_route' | 'idle' | 'arrived' | 'error';
+  speed: number; // Added: server-side physics velocity
   timestamp: string;  // ISO string
 }
 
@@ -410,6 +412,7 @@ class NetworkVisualizer {
         // Update distance along path
         if (typeof location.distance_on_edge === 'number') {
           pod.targetDistance = location.distance_on_edge;
+          pod.velocity = positionData.speed || 0;
           pod.lastUpdate = Date.now();
 
           // Snap if jump is too large (e.g. teleporting across map or segment change)
@@ -432,12 +435,12 @@ class NetworkVisualizer {
 
     // Core pod circle
     pod.gfx.beginFill(podColor, 1);
-    pod.gfx.drawCircle(0, 0, 13);
+    pod.gfx.drawCircle(0, 0, 3);
     pod.gfx.endFill();
 
     // Glow aura based on pod type
     pod.gfx.beginFill(podColor, 0.3);
-    pod.gfx.drawCircle(0, 0, 16);
+    pod.gfx.drawCircle(0, 0, 6);
     pod.gfx.endFill();
   }
 
@@ -589,14 +592,16 @@ class NetworkVisualizer {
       distanceAlongPath: data.distance || 0,
       targetDistance: data.distance || 0,
       speed: 0, // Speed is derived from server updates now
+      velocity: 0, // Current movement velocity for extrapolation
       lastUpdate: Date.now(),
       data: data
     };
   }
 
   animate(delta: number): void {
-    // interpolation factor (tunable)
-    const lerpFactor = 0.1;
+    // Current time delta in seconds (assuming 60fps baseline for PIXI delta=1.0)
+    const dt = delta / 60;
+    const lerpFactor = 0.15; // Increased slightly for snappier catch-up
 
     this.pods.forEach(pod => {
       // If the pod is at a station (no spineId), we don't interpolate distance,
@@ -604,22 +609,27 @@ class NetworkVisualizer {
       if (!pod.spineId) return;
 
       const spine = this.spines.get(pod.spineId);
-      // console.log("Finding spine for pod: ", pod.spineId, spine);
       if (!spine) return;
-      // console.log("Animating pod on spine: ", pod.spineId, spine);
 
-      // Simple Linear Interpolation towards server state
-      const diff = pod.targetDistance - pod.distanceAlongPath;
-
-      if (Math.abs(diff) > 0.1) {
-        pod.distanceAlongPath += diff * lerpFactor;
-      } else {
-        pod.distanceAlongPath = pod.targetDistance;
+      // 1. Extrapolation: Predict movement based on last known velocity
+      if (pod.velocity > 0) {
+        pod.distanceAlongPath += pod.velocity * dt;
       }
+
+      // 2. Correction: Gently pull towards the authoritative server position (targetDistance)
+      // This prevents divergence over time while maintaining smooth motion
+      const error = pod.targetDistance - pod.distanceAlongPath;
+      
+      // If error is small, use lerp to smooth it out. If massive, we already snapped in the handler.
+      if (Math.abs(error) > 0.1) {
+        pod.distanceAlongPath += error * lerpFactor;
+      }
+
+      // Bind to spine length
+      pod.distanceAlongPath = Math.max(0, Math.min(pod.distanceAlongPath, spine.totalLength));
 
       // authoritative sample & render
       const sample = this.sampleSpine(spine, pod.distanceAlongPath);
-      // console.log("p1: ", pod.gfx.position, " p2: ", sample.position);
       pod.gfx.position.set(sample.position.x, sample.position.y);
 
       // Orient towards tangent

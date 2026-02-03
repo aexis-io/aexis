@@ -220,7 +220,7 @@ class AexisSystem:
 
     async def initialize(self) -> bool:
         """Initialize system"""
-        print(f"Loaded {self.pod_count} pods");
+        print(f"Loaded {self.pod_count} pods")
         try:
             # Connect to Redis
             if not await self.message_bus.connect():
@@ -455,7 +455,17 @@ class AexisSystem:
 
         PHASE 1: Pods spawn at random positions on network edges
         Pod types (passenger/cargo) determined by cargoPercentage from config
+
+        Precondition: Network must have at least one edge (spine/path)
         """
+        # Validate network has edges before spawning
+        if not self.network_context.edges:
+            logger.error(
+                "Cannot spawn pods: network has no edges. "
+                "Verify network.json has stations with adjacencies."
+            )
+            return
+
         for i in range(1, self.pod_count + 1):
             pod_id = f"pod_{i:03d}"
 
@@ -475,54 +485,42 @@ class AexisSystem:
                 pod = PassengerPod(self.message_bus, pod_id, routing_provider)
 
             # PHASE 1: Spawn pod at random network edge
-            edge_id, coordinate = self.network_context.spawn_pod_at_random_edge()
+            # spawn_pod_at_random_edge() returns (edge_id, coordinate, distance) where edge_id is always an edge
+            edge_id, coordinate, distance_on_edge = self.network_context.spawn_pod_at_random_edge()
 
-            # Set initial position
-            # Check if we fell back to a station ID
-            if edge_id in self.network_context.station_positions:
-                # Fallback: spawned at station
-                from .model import LocationDescriptor
-                pod.location_descriptor = LocationDescriptor(
-                    "station", node_id=edge_id, coordinate=coordinate)
-            else:
-                # Spawned on edge - set up for continuous movement
-                from .model import LocationDescriptor, PodStatus
+            # Retrieve the actual EdgeSegment object
+            edge_segment = self.network_context.edges.get(edge_id)
 
-                # Retrieve the actual EdgeSegment object
-                edge_segment = self.network_context.edges.get(edge_id)
+            if not edge_segment:
+                # This should never happen if spawn_pod_at_random_edge() works correctly
+                logger.error(
+                    f"Pod {pod_id}: spawned on edge {edge_id} but edge not found in network context"
+                )
+                continue
 
-                if edge_segment:
-                    pod.current_segment = edge_segment
-                    # Approximate progress based on coordinate distance from start
-                    # (Simple linear approximation for initialization)
-                    pod.segment_progress = edge_segment.start_coord.distance_to(
-                        coordinate)
+            # Set up pod for edge-based movement
+            from .model import LocationDescriptor, PodStatus
 
-                    pod.status = PodStatus.EN_ROUTE
-                    pod.location_descriptor = LocationDescriptor(
-                        "edge",
-                        edge_id=edge_id,
-                        coordinate=coordinate,
-                        distance_on_edge=pod.segment_progress
-                    )
+            pod.current_segment = edge_segment
+            pod.segment_progress = distance_on_edge
 
-                    # Assign a random destination so it keeps moving after this edge
-                    # Find a random station that is NOT the start/end of current edge
-                    all_stations = list(
-                        self.network_context.station_positions.keys())
-                    if all_stations:
-                        import random
-                        dest = random.choice(all_stations)
-                        # We can't easily call navigate_to_station because we are mid-edge.
-                        # For now, let's just let it finish this edge.
-                        # Logic in 'update' handles route completion.
-                else:
-                    logger.warning(f"Spawned on unknown edge {edge_id}")
+            # Mark as en route so movement simulation will update it
+            pod.status = PodStatus.EN_ROUTE
+
+            # Set location descriptor with precise position
+            pod.location_descriptor = LocationDescriptor(
+                location_type="edge",
+                edge_id=edge_id,
+                coordinate=coordinate,
+                distance_on_edge=distance_on_edge
+            )
 
             self.pods[pod_id] = pod
             pod_type = "Cargo" if is_cargo else "Passenger"
+
             logger.info(
-                f"Created {pod_type}Pod: {pod_id} at edge {edge_id} @ position ({coordinate.x}, {coordinate.y})"
+                f"Created {pod_type}Pod: {pod_id} on edge {edge_id} "
+                f"at position ({coordinate.x:.1f}, {coordinate.y:.1f})"
             )
 
             # Publish initial position update for UI rendering
@@ -650,7 +648,7 @@ class AexisSystem:
         Uses precise delta-time calculation to ensure smooth, speed-consistent movement
         regardless of the actual update frequency (server lag resilience).
         """
-        target_interval = 0.5  # Target 10 Hz
+        target_interval = 0.1  # Target 10 Hz
         loop = asyncio.get_running_loop()
         last_time = loop.time()
 

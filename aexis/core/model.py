@@ -330,4 +330,5 @@ class PodPositionUpdate(Event):
         default_factory=lambda: LocationDescriptor("station", "unknown"))
     timestamp: datetime = field(default_factory=datetime.utcnow)
     status: str = "idle"
+    speed: float = 0.0
     current_route: Optional[list[str]] = None

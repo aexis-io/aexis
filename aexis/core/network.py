@@ -72,18 +72,11 @@ class NetworkContext:
             try:
                 # Try finding the file relative to current working dir or package
                 # Assuming CWD is project root usually
-                path = os.getenv("AEXIS_NETWORK_DATA", "aexis/network.json")
+                path = os.getenv("AEXIS_NETWORK_DATA", "network.json")
                 if os.path.exists(path):
                     network_data = load_network_data(path)
-                else:
-                    # Try looking in package
-                    import pkg_resources
-
-                    # Example fallback
-                    if pkg_resources.resource_exists(__name__, "network.json"):
-                        pass
             except Exception as e:
-                print(f"Failed to auto-load network data: {e}")
+                print(f"Missing network data file or failed to load: {e}")
 
         if network_data:
             self._initialize_from_data(network_data)
@@ -158,18 +151,18 @@ class NetworkContext:
             self.edges[edge_id_forward] = seg_forward
             self.edges[edge_id_backward] = seg_backward
 
-    def spawn_pod_at_random_edge(self) -> tuple[str, Coordinate]:
+    def spawn_pod_at_random_edge(self) -> tuple[str, Coordinate, float]:
         """Spawn a pod at a random position on a random edge
 
         Returns:
-            (edge_id, coordinate) - The edge and starting position
+            (edge_id, coordinate, distance_on_edge) - The edge and starting position
         """
         if not self.edges:
             # Fallback: spawn at first station
             station_id = list(self.station_positions.keys())[
                 0] if self.station_positions else "station_001"
             pos = self.station_positions.get(station_id, (0, 0))
-            return station_id, Coordinate(pos[0], pos[1])
+            return station_id, Coordinate(pos[0], pos[1]), 0.0
 
         # Pick random edge
         edge_id = random.choice(list(self.edges.keys()))
@@ -179,7 +172,7 @@ class NetworkContext:
         distance_on_edge = random.uniform(0.1 * edge.length, 0.9 * edge.length)
         coord = edge.get_point_at_distance(distance_on_edge)
 
-        return edge_id, coord
+        return edge_id, coord, distance_on_edge
 
     def get_nearest_station(self, coordinate: Coordinate) -> str:
         """Find nearest station to a coordinate"""

@@ -55,8 +55,6 @@ async def main():
             host=host,
             port=port,
             log_level="warning",
-            reload=True,
-            reload_dirs=["."],
         )
         server = uvicorn.Server(config)
 

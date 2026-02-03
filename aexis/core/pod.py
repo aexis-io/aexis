@@ -564,9 +564,9 @@ class Pod(EventProcessor):
             pod_id=self.pod_id,
             location=self.location_descriptor,
             status=self.status.value,
+            speed=self.speed if self.status == PodStatus.EN_ROUTE else 0.0,
             current_route=self.current_route.stations if self.current_route else None
         )
-        print(f"Pod {self.pod_id} position update: ({self.location_descriptor.coordinate.x}, {self.location_descriptor.coordinate.y})")
         await self.publish_event(event)
 
     def _get_capacity_status(self):
