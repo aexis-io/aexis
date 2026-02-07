@@ -105,12 +105,8 @@ class OfflineRoutingStrategy(RoutingStrategy):
     def calculate_optimal_route(self, context: DecisionContext) -> dict:
         """Calculate optimal route using TSP approximation"""
         if not context.available_requests:
-            return {
-                "route": [context.current_location],
-                "duration": 0,
-                "distance": 0,
-                "confidence": 0.8,
-            }
+            # No requests: navigate to nearest station for patrol/availability
+            return self._get_patrol_route(context.current_location)
 
         # Get valid destinations based on pod type
         destinations = self._extract_destinations(context)
@@ -127,12 +123,8 @@ class OfflineRoutingStrategy(RoutingStrategy):
                     destinations.add(dest)
             
             if not destinations:
-                return {
-                    "route": [context.current_location],
-                    "duration": 0,
-                    "distance": 0,
-                    "confidence": 0.8,
-                }
+                # Still no destinations: navigate to nearest station
+                return self._get_patrol_route(context.current_location)
 
         # Solve TSP
         optimal_route = self._solve_traveling_salesman(
@@ -170,6 +162,11 @@ class OfflineRoutingStrategy(RoutingStrategy):
                 continue
             if is_cargo_pod and req_type != "cargo":
                 continue
+
+            # If we are NOT at the origin, the origin is a destination for pickup
+            origin = req.get("origin")
+            if origin and origin != context.current_location:
+                destinations.add(origin)
 
             destination = req.get("destination")
             if destination and destination != context.current_location:
@@ -224,6 +221,44 @@ class OfflineRoutingStrategy(RoutingStrategy):
                 nearest = station
 
         return nearest
+
+    def _get_patrol_route(self, current_location: str) -> dict:
+        """Get patrol route to nearest station when no requests available"""
+        all_stations = list(self.network_context.station_positions.keys())
+        
+        # If only one station exists, stay there
+        if len(all_stations) <= 1:
+            return {
+                "route": [current_location],
+                "duration": 0,
+                "distance": 0,
+                "confidence": 0.8,
+            }
+        
+        # Find nearest station different from current
+        candidates = [s for s in all_stations if s != current_location]
+        if not candidates:
+            # No other stations, stay put
+            return {
+                "route": [current_location],
+                "duration": 0,
+                "distance": 0,
+                "confidence": 0.8,
+            }
+        
+        nearest = self._find_nearest_station(current_location, candidates)
+        route = [current_location, nearest]
+        
+        # Calculate metrics
+        distance = self.network_context.get_route_distance(route)
+        duration = self._estimate_travel_time(distance, {})
+        
+        return {
+            "route": route,
+            "duration": duration,
+            "distance": distance,
+            "confidence": 0.8,
+        }
 
     def _estimate_travel_time(self, distance: float, network_state: dict) -> int:
         """Estimate travel time in minutes"""

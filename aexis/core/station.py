@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import random
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from .message_bus import EventProcessor, MessageBus
 from .model import (
@@ -43,6 +43,8 @@ class Station(EventProcessor):
             MessageBus.CHANNELS["PASSENGER_EVENTS"], self._handle_passenger_event
         )
         self.message_bus.subscribe(
+            MessageBus.CHANNELS["POD_EVENTS"], self._handle_pod_event)
+        self.message_bus.subscribe(
             MessageBus.CHANNELS["CARGO_EVENTS"], self._handle_cargo_event
         )
         self.message_bus.subscribe(
@@ -55,17 +57,41 @@ class Station(EventProcessor):
             MessageBus.CHANNELS["PASSENGER_EVENTS"], self._handle_passenger_event
         )
         self.message_bus.unsubscribe(
+            MessageBus.CHANNELS["POD_EVENTS"], self._handle_pod_event)
+        self.message_bus.unsubscribe(
             MessageBus.CHANNELS["CARGO_EVENTS"], self._handle_cargo_event
         )
         self.message_bus.unsubscribe(
             MessageBus.CHANNELS["SYSTEM_COMMANDS"], self._handle_system_command
         )
 
+    async def _handle_pod_event(self, data: dict):
+        """Handle pod-related events (e.g. arrivals, departures)"""
+        try:
+            message = data.get("message", {})
+            event_type = message.get("event_type", "")
+            event_data = message.get("data", {})
+            if not event_data:
+                event_data = message
+
+            # from the PodPositionUpdate event, we can determine if a pod has arrived at or departed from the station, and update available bays accordingly
+            # if the pod position update indicates the pod is now at the station, we can assume it has arrived and decrease available bays by 1.
+
+        except Exception as e:
+            logger.debug(
+                f"Station {self.station_id} pod event error: {e}", exc_info=True
+            )
+
+
     async def _handle_passenger_event(self, data: dict):
         """Handle passenger-related events"""
         try:
-            event_type = data.get("message", {}).get("event_type", "")
-            event_data = data.get("message", {}).get("data", {})
+            message = data.get("message", {})
+            event_type = message.get("event_type", "")
+            # Robustly get event data - might be in 'data' field or top-level entries
+            event_data = message.get("data", {})
+            if not event_data:
+                event_data = message
 
             if event_type == "PassengerArrival":
                 await self._handle_passenger_arrival(event_data)
@@ -82,8 +108,11 @@ class Station(EventProcessor):
     async def _handle_cargo_event(self, data: dict):
         """Handle cargo-related events"""
         try:
-            event_type = data.get("message", {}).get("event_type", "")
-            event_data = data.get("message", {}).get("data", {})
+            message = data.get("message", {})
+            event_type = message.get("event_type", "")
+            event_data = message.get("data", {})
+            if not event_data:
+                event_data = message
 
             if event_type == "CargoRequest":
                 await self._handle_cargo_request(event_data)
@@ -110,7 +139,8 @@ class Station(EventProcessor):
                 await self._handle_capacity_update(data)
 
         except Exception as e:
-            logger.debug(f"Station {self.station_id} command error: {e}", exc_info=True)
+            logger.debug(
+                f"Station {self.station_id} command error: {e}", exc_info=True)
 
     async def _handle_passenger_arrival(self, event_data: dict):
         """Handle new passenger arrival"""
@@ -127,14 +157,14 @@ class Station(EventProcessor):
             "priority": event_data.get("priority", Priority.NORMAL.value),
             "group_size": event_data.get("group_size", 1),
             "special_needs": event_data.get("special_needs", []),
-            "arrival_time": datetime.now(datetime.UTC),
+            "arrival_time": datetime.now(UTC),
             "wait_time_limit": event_data.get("wait_time_limit", 30),
         }
 
         self.passenger_queue.append(passenger)
         self._update_congestion_level()
 
-        logger.info(
+        logger.warning(
             f"Station {self.station_id}: Passenger {passenger_id} added to queue (queue size: {len(self.passenger_queue)})"
         )
 
@@ -160,11 +190,14 @@ class Station(EventProcessor):
             "hazardous": event_data.get("hazardous", False),
             "temperature_controlled": event_data.get("temperature_controlled", False),
             "deadline": event_data.get("deadline"),
-            "arrival_time": datetime.now(datetime.UTC),
+            "arrival_time": datetime.now(UTC),
         }
+        logger.warning(
+            f"Station {self.station_id}: Received cargo request {request_id} with weight {cargo['weight']} and volume {cargo['volume']}")
 
         self.cargo_queue.append(cargo)
         self._update_congestion_level()
+        # if there are pods in the station, we should trigger the loading process immediately for this new cargo, otherwise it will wait until the next pod arrives and checks the queue
 
         logger.info(
             f"Station {self.station_id}: Cargo {request_id} added to queue (queue size: {len(self.cargo_queue)})"
@@ -191,7 +224,8 @@ class Station(EventProcessor):
         self._update_congestion_level()
         self._update_wait_time_metrics()
 
-        logger.info(f"Station {self.station_id}: Passenger {passenger_id} picked up")
+        logger.info(
+            f"Station {self.station_id}: Passenger {passenger_id} picked up")
 
     async def _handle_cargo_loading(self, event_data: dict):
         """Handle cargo loading by pod"""
@@ -257,7 +291,7 @@ class Station(EventProcessor):
         if not self.passenger_queue:
             return
 
-        current_time = datetime.now(datetime.UTC)
+        current_time = datetime.now(UTC)
         wait_times = []
 
         for passenger in self.passenger_queue:
@@ -284,7 +318,7 @@ class Station(EventProcessor):
         # Estimate clear time based on processing rate
         total_items = len(self.passenger_queue) + len(self.cargo_queue)
         estimated_clear_minutes = total_items / self.processing_rate
-        estimated_clear_time = datetime.now(datetime.UTC) + timedelta(
+        estimated_clear_time = datetime.now(UTC) + timedelta(
             minutes=estimated_clear_minutes
         )
 
@@ -372,7 +406,8 @@ class PassengerGenerator:
             # Poisson-like distribution for arrivals
             num_passengers = 0
             if random.random() < self.generation_rate:
-                num_passengers = random.choices([1, 2, 3], weights=[0.7, 0.25, 0.05])[0]
+                num_passengers = random.choices(
+                    [1, 2, 3], weights=[0.7, 0.25, 0.05])[0]
 
             for _ in range(num_passengers):
                 await self._create_passenger(station)
@@ -390,14 +425,15 @@ class PassengerGenerator:
         )[0]
 
         # Random group size
-        group_size = random.choices([1, 2, 3, 4], weights=[0.6, 0.25, 0.1, 0.05])[0]
+        group_size = random.choices([1, 2, 3, 4], weights=[
+                                    0.6, 0.25, 0.1, 0.05])[0]
 
         # Random special needs
         special_needs = []
         if random.random() < 0.1:  # 10% chance
             special_needs.append("wheelchair")
 
-        passenger_id = f"p_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
+        passenger_id = f"p_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
 
         event = PassengerArrival(
             passenger_id=passenger_id,
@@ -485,7 +521,7 @@ class CargoGenerator:
                 hours=random.randint(2, 24)
             )
 
-        request_id = f"c_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
+        request_id = f"c_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
 
         event = CargoRequest(
             request_id=request_id,
@@ -517,9 +553,3 @@ class CargoGenerator:
             temperature_controlled=False,
             deadline=None,
         )
-
-
-# Helper for PassengerGenerator too
-def _extend_passenger_generator():
-    """Monkey patch or modify PassengerGenerator to support manual"""
-    pass  # Already imported, will modify class above

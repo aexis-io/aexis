@@ -1,7 +1,7 @@
 {
   "config": {
     "debug": false,
-    "networkDataPath": "network.json",
+    "networkDataPath": "/home/godelhaze/dev/megalith/aexis/aexis/network.json",
     "redis": {
       "url": "redis://localhost:6379",
       "password": "your_redis_password_here"
@@ -13,7 +13,7 @@
       }
     },
     "pods": {
-      "count": 18,
+      "count": 1,
       "cargoRatio": 0.5,
       "cargoPercentage": 50
     },

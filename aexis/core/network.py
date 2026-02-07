@@ -72,7 +72,7 @@ class NetworkContext:
             try:
                 # Try finding the file relative to current working dir or package
                 # Assuming CWD is project root usually
-                path = os.getenv("AEXIS_NETWORK_DATA", "network.json")
+                path = os.getenv("AEXIS_NETWORK_DATA", "")
                 if os.path.exists(path):
                     network_data = load_network_data(path)
             except Exception as e:

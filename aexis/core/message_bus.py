@@ -126,8 +126,6 @@ class MessageBus:
             message = {"channel": channel, "message": event_dict}
 
             await self.redis_client.publish(channel, json.dumps(message))
-            # print(f"DEBUG: Published {event.event_type} to {channel}")
-            # logger.debug(f"Published {event.event_type} to {channel}")
             return True
 
         except redis.ConnectionError as e:
@@ -282,7 +280,7 @@ class MessageBus:
                 )
 
             # Subscribe to all channels
-            for channel in self.subscribers.keys():
+            for channel in list(self.subscribers.keys()):
                 try:
                     await self.pubsub.subscribe(channel)
                     logger.info(f"Subscribed to Redis channel: {channel}")
@@ -298,14 +296,11 @@ class MessageBus:
             self.running = True
 
             # Listen for messages
-            print("Starting message listener loop...")
             async for message in self.pubsub.listen():
                 if not self.running:
-                    print("Message listener stopped (not running)")
                     break
 
                 if message["type"] == "message":
-                    print(f"DEBUG: Received Redis message on {message['channel']}")
                     await self._handle_message(message)
 
         except Exception as e:
@@ -336,7 +331,7 @@ class MessageBus:
                 return
 
             # Call all subscribers for this channel
-            for handler in self.subscribers[channel]:
+            for handler in list(self.subscribers[channel]):
                 try:
                     if asyncio.iscoroutinefunction(handler):
                         await handler(data)
@@ -405,6 +400,98 @@ class MessageBus:
         except Exception as e:
             logger.error(f"Error determining command channel for {command_type}: {e}")
             return cls.CHANNELS["SYSTEM_COMMANDS"]
+
+
+class LocalMessageBus(MessageBus):
+    """In-memory message bus for testing and local operation (No Redis required)"""
+
+    def __init__(self):
+        super().__init__(redis_url="local://")
+        self.subscribers: dict[str, list[Callable]] = {}
+        self.running = False
+
+    async def connect(self) -> bool:
+        """Simulate connection"""
+        self.running = True
+        logger.info("Local message bus initialized")
+        return True
+
+    async def disconnect(self):
+        """Simulate disconnect"""
+        self.running = False
+        logger.info("Local message bus disconnected")
+
+    async def publish_event(self, channel: str, event: Event) -> bool:
+        """Publish event directly to local handlers"""
+        if not self.running:
+            return False
+
+        from dataclasses import asdict
+        event_dict = asdict(event)
+        if "timestamp" in event_dict:
+            event_dict["timestamp"] = event.timestamp.isoformat()
+
+        message = {"channel": channel, "message": event_dict}
+        
+        # Immediate dispatch in local bus
+        await self._handle_local_message(channel, message)
+        return True
+
+    async def publish_command(self, channel: str, command: Command) -> bool:
+        """Publish command directly to local handlers"""
+        if not self.running:
+            return False
+
+        message = {
+            "channel": channel,
+            "message": {
+                "command_id": command.command_id,
+                "command_type": command.command_type,
+                "target": command.target,
+                "timestamp": command.timestamp.isoformat(),
+                "parameters": command.parameters,
+            },
+        }
+        
+        # Immediate dispatch in local bus
+        await self._handle_local_message(channel, message)
+        return True
+
+    def subscribe(self, channel: str, handler: Callable):
+        """Subscribe to local channel"""
+        if channel not in self.subscribers:
+            self.subscribers[channel] = []
+        self.subscribers[channel].append(handler)
+
+    def unsubscribe(self, channel: str, handler: Callable):
+        """Unsubscribe from local channel"""
+        if channel in self.subscribers:
+            try:
+                self.subscribers[channel].remove(handler)
+            except ValueError:
+                pass
+
+    async def start_listening(self):
+        """No-op for local bus (dispatch is immediate)"""
+        self.running = True
+
+    async def _handle_local_message(self, channel: str, data: dict):
+        """Dispatch message to local handlers"""
+        if channel not in self.subscribers:
+            return
+
+        for handler in self.subscribers[channel]:
+            try:
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(data)
+                else:
+                    handler(data)
+            except Exception as e:
+                logger.error(f"Local handler error on {channel}: {e}")
+
+    async def stop_listening(self):
+        """Stop local bus"""
+        self.running = False
 
 
 class EventProcessor:

@@ -1,5 +1,6 @@
 import logging
 import sys
+import asyncio
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -10,6 +11,7 @@ from .model import (
     Decision,
     DecisionContext,
     LocationDescriptor,
+    PodArrival,
     PodDecision,
     PodPositionUpdate,
     PodStatus,
@@ -57,16 +59,19 @@ class Pod(EventProcessor):
         super().__init__(message_bus, pod_id)
         self.pod_id = pod_id
         self.status = PodStatus.IDLE
+        self._available_requests = []
+        self.decision: Optional[Decision] = None
 
         # PHASE 1: Position tracking on network
         self.location_descriptor = LocationDescriptor(
             "station", "station_001")  # Default
-        
+
         # Continuous Navigation State
         self.route_queue: Deque[EdgeSegment] = deque()
         self.current_segment: Optional[EdgeSegment] = None
         self.segment_progress: float = 0.0  # Meters traveled on current segment
-        self.speed: float = 20.0  # Increased speed for better responsiveness (m/s)
+        # Increased speed for better responsiveness (m/s)
+        self.speed: float = 20.0
 
         self.current_route: Route | None = None
         self.movement_start_time = None
@@ -202,7 +207,7 @@ class Pod(EventProcessor):
             if self.current_route and self.current_route.stations:
                 # Hydrate route into edge segments
                 await self._hydrate_route(self.current_route.stations)
-                
+
                 self.status = PodStatus.EN_ROUTE
                 self.movement_start_time = datetime.now(UTC)
                 self.estimated_arrival = self.movement_start_time + timedelta(
@@ -225,11 +230,11 @@ class Pod(EventProcessor):
         """Convert list of station IDs into a queue of EdgeSegments for navigation"""
         from .network import NetworkContext
         network = NetworkContext.get_instance()
-        
+
         self.route_queue.clear()
         self.current_segment = None
         self.segment_progress = 0.0
-        
+
         if len(stations) < 2:
             return
 
@@ -237,15 +242,16 @@ class Pod(EventProcessor):
             start = stations[i]
             end = stations[i+1]
             edge_id = f"{start}->{end}"
-            
+
             # Check edge existence
             if edge_id in network.edges:
                 self.route_queue.append(network.edges[edge_id])
             else:
                 # Fallback: Create synthetic edge if missing from map (robustness)
-                logger.warning(f"Pod {self.pod_id} hydrating synthetic edge {edge_id}")
-                p1 = network.station_positions.get(start, (0,0))
-                p2 = network.station_positions.get(end, (0,0))
+                logger.warning(
+                    f"Pod {self.pod_id} hydrating synthetic edge {edge_id}")
+                p1 = network.station_positions.get(start, (0, 0))
+                p2 = network.station_positions.get(end, (0, 0))
                 synthetic_edge = EdgeSegment(
                     segment_id=edge_id,
                     start_node=start,
@@ -254,7 +260,7 @@ class Pod(EventProcessor):
                     end_coord=Coordinate(p2[0], p2[1])
                 )
                 self.route_queue.append(synthetic_edge)
-        
+
         # Prime the first segment
         if self.route_queue:
             self.current_segment = self.route_queue.popleft()
@@ -305,6 +311,8 @@ class Pod(EventProcessor):
                 fallback_used=False,
             )
 
+            
+            self.decision = decision
             # Execute decision
             await self._execute_decision(decision)
 
@@ -334,8 +342,8 @@ class Pod(EventProcessor):
         )
 
     async def _execute_decision(self, decision: Decision):
-        """Execute the routing decision"""
-        if decision.route:
+        """Execute the routing decision and setup pickup/delivery"""
+        if decision:
             # Create Route object from decision data
             from .model import Route
 
@@ -345,14 +353,25 @@ class Pod(EventProcessor):
                 estimated_duration=decision.estimated_duration,
             )
 
+            # Hydrate route into segments for movement
+            await self._hydrate_route(decision.route)
+
             self.status = PodStatus.EN_ROUTE
             self.movement_start_time = datetime.now(UTC)
+
+            # Setup pickup and delivery stations for pods
+            await self._setup_pickup_delivery_routes(decision.route)
 
             logger.info(
                 f"Pod {self.pod_id} executing decision: {decision.route}")
 
-        # Logic to "load" passengers/cargo based on accepted requests would go here
-        # For MVP we just track them in the list
+    async def _setup_pickup_delivery_routes(self, stations: list[str]):
+        """Setup pickup and delivery stations from route
+
+        This is overridden by subclasses to handle passenger/cargo specific logic.
+        """
+        # Base implementation does nothing
+        pass
 
     async def _publish_decision_event(self, decision: Decision):
         """Publish pod decision event"""
@@ -381,7 +400,7 @@ class Pod(EventProcessor):
         event = PodStatusUpdate(
             pod_id=self.pod_id,
             location=self.location_descriptor.node_id if self.location_descriptor.location_type == "station" else self.current_edge,
-            status=self.status,
+            status=self.status.value,
             capacity_used=cap_used,
             capacity_total=cap_total,
             weight_used=w_used,
@@ -401,7 +420,7 @@ class Pod(EventProcessor):
 
     async def update(self, dt: float) -> bool:
         """Update pod physics for time step dt
-        
+
         Implements Continuous Path Integration:
         - Consumes distance from current segment
         - Overflows to next segment in queue if dt > remaining length
@@ -412,7 +431,7 @@ class Pod(EventProcessor):
 
         dist_to_travel = self.speed * dt
         # Safety cap to prevent warping across map in one lag spike (e.g. max 100m/tick)
-        dist_to_travel = min(dist_to_travel, 100.0) 
+        dist_to_travel = min(dist_to_travel, 100.0)
 
         while dist_to_travel > 0:
             if not self.current_segment:
@@ -421,19 +440,35 @@ class Pod(EventProcessor):
                 return True
 
             remaining_on_edge = self.current_segment.length - self.segment_progress
-            
+
             if dist_to_travel >= remaining_on_edge:
                 # Overflow case: Complete this edge and continue to next
                 dist_to_travel -= remaining_on_edge
+
+                # Capture the node we just arrived at
+                arrived_node = self.current_segment.end_node
                 self._advance_segment()
+                logger.warning(
+                    f"Pod {self.pod_id} edge transition: arrived at node {arrived_node}, moving to next segment {self.current_segment.segment_id if self.current_segment else 'None'}")
+                # print(f"[{self.pod_id}]: --- Navigating to {self.current_segment.start_node}")
+
+                # Check for station arrival at intermediate nodes
+                # (The final node is handled by _handle_route_completion)
+                if not self.current_segment:
+                    logger.warning(
+                        f"[{self.pod_id}]: Checking station arrival at {arrived_node}")
+                    await self._handle_station_arrival(arrived_node)
+                    # If pod is now loading/unloading, stop movement for this tick
+                    if self.status in [PodStatus.LOADING, PodStatus.UNLOADING]:
+                        return True
             else:
                 # Normal case: Move along current edge
                 self.segment_progress += dist_to_travel
                 dist_to_travel = 0
-        
+
         # Update observable location state
         self._update_location_descriptor()
-        
+
         # Publish exactly one position update per physics tick
         # This gives the UI the final resolved position after all internal edge transitions
         await self._publish_position_update()
@@ -448,6 +483,7 @@ class Pod(EventProcessor):
             # No more segments, we have arrived at final destination node of the last segment
             # Mark as finished so next loop iteration catches it
             self.current_segment = None
+        print(f"[{self.pod_id}]: Current segment after advance: {self.current_segment.segment_id if self.current_segment else 'None'}")
 
     def _update_location_descriptor(self):
         """Update the public location descriptor based on internal physics state"""
@@ -455,8 +491,9 @@ class Pod(EventProcessor):
             return
 
         # Interpolate exact position
-        current_coord = self.current_segment.get_point_at_distance(self.segment_progress)
-        
+        current_coord = self.current_segment.get_point_at_distance(
+            self.segment_progress)
+
         self.location_descriptor = LocationDescriptor(
             location_type="edge",
             edge_id=self.current_segment.segment_id,
@@ -466,30 +503,44 @@ class Pod(EventProcessor):
 
     async def _handle_route_completion(self):
         """Handle arrival at destination"""
-        self.status = PodStatus.IDLE
-        self.segment_progress = 0.0
-        
-        # Snap to final station coordinate
+        # Snap to final station coordinate before clearing route
         if self.current_route and self.current_route.stations:
             final_station = self.current_route.stations[-1]
             from .network import NetworkContext
             nc = NetworkContext.get_instance()
-            pos = nc.station_positions.get(final_station, (0,0))
-            
+            pos = nc.station_positions.get(final_station, (0, 0))
+
             self.location_descriptor = LocationDescriptor(
                 location_type="station",
                 node_id=final_station,
                 coordinate=Coordinate(pos[0], pos[1])
             )
-        
+
+            # Handle station arrival (pickup/delivery)
+            await self._handle_station_arrival(final_station)
+
+        self.status = PodStatus.IDLE
+        self.current_route = None
+        self.segment_progress = 0.0
+
         await self._publish_position_update()
         await self._publish_status_update()
         logger.info(f"Pod {self.pod_id} arrived at destination")
-        
+
         # Immediately make a new decision to keep moving (Patrol/Next Task)
-        # Verify we are not blocked by some other state
-        if self.status == PodStatus.IDLE:
-             await self.make_decision()
+        # Trigger if we are idle OR if we just finished a leg and need a new one
+        if self.status == PodStatus.IDLE or not self.current_route:
+            await self.make_decision()
+
+    async def _handle_station_arrival(self, station_id: str):
+        """Handle arrival at a station for pickup/delivery
+
+        This is called when pod completes a route segment to a station.
+        Subclasses override to implement pickup/delivery logic.
+        """
+        # Base implementation does nothing
+        # Subclasses implement passenger/cargo handling
+        pass
 
     async def navigate_to_station(self, target_station: str) -> bool:
         """Start navigation from current position to target station
@@ -528,18 +579,18 @@ class Pod(EventProcessor):
                 # Start navigation using new system
                 # Convert path to segments
                 # Since we are already in async method, we can hydrate immediately
-                
+
                 # Create a mock route object for hydration
                 dummy_route = Route(
                     route_id=f"nav_{datetime.now().timestamp()}",
                     stations=path,
-                    estimated_duration=10 # Estimation...
+                    estimated_duration=10  # Estimation...
                 )
                 self.current_route = dummy_route
-                
+
                 # Hydrate
                 await self._hydrate_route(path)
-                
+
                 if self.current_segment:
                     self.status = PodStatus.EN_ROUTE
                     logger.info(
@@ -614,14 +665,127 @@ class PassengerPod(Pod):
     ):
         super().__init__(message_bus, pod_id, routing_provider)
         self.capacity = 4  # Seats
-        self.passengers = []  # List[str] IDs
+        self.passengers = []  # List[dict] with passenger_id, destination
+        self.pickup_route = []  # Stations to pick up from, in order
+        self.delivery_route = []  # Stations to deliver to, in order
 
     def _get_pod_type(self) -> PodType:
         """Return passenger pod type"""
         return PodType.PASSENGER
 
+    async def _handle_station_arrival(self, station_id: str):
+        """Handle passenger pickup/delivery at station"""
+        self.status = PodStatus.IDLE
+        event = PodArrival(pod_id=self.pod_id, station_id=station_id)
+        logger.warning(f"Pod {self.pod_id} arrived at station {station_id}, checking for passengers")
+        self.message_bus.publish_event(MessageBus.get_event_channel(event.event_type), event)
+        await self._execute_passenger_pickup(station_id)
+        await self._execute_passenger_delivery(station_id)
+
+    async def _execute_passenger_pickup(self, station_id: str):
+        """Execute passenger pickup at station"""
+        remaining_capacity = self.capacity - len(self.passengers)
+        if remaining_capacity <= 0:
+            logger.debug(
+                f"Pod {self.pod_id} at capacity, skipping pickup at {station_id}")
+            return
+
+        # Find passengers waiting at this station for us (from available_requests)
+        # This is populated by system._populate_pod_requests before decision
+        logger.warning(
+            f"Pod {self.pod_id}: execute_passenger_pickup at {station_id}, _available_requests count={len(self._available_requests)}")
+        pickups = [r for r in self._available_requests if r.get(
+            "origin") == station_id and r.get("type") == "passenger"]
+
+        if not pickups:
+            logger.debug(
+                f"Pod {self.pod_id} found no passengers at {station_id}")
+            return
+
+        self.status = PodStatus.LOADING
+        await self._publish_status_update()
+
+        # Pick up as many as capacity allows
+        to_pickup = pickups[:remaining_capacity]
+
+        # Simulate loading time: 5 seconds per passenger
+        loading_time = len(to_pickup) * 5
+        await asyncio.sleep(loading_time)
+
+        from .model import PassengerPickedUp
+        for req in to_pickup:
+            passenger = {
+                "passenger_id": req.get("passenger_id"),
+                "destination": req.get("destination"),
+                "pickup_time": datetime.now(UTC)
+            }
+            self.passengers.append(passenger)
+
+            # Notify system/station
+            event = PassengerPickedUp(
+                passenger_id=passenger["passenger_id"],
+                pod_id=self.pod_id,
+                station_id=station_id,
+                pickup_time=passenger["pickup_time"]
+            )
+            await self.publish_event(event)
+
+        self.status = PodStatus.EN_ROUTE
+        logger.info(
+            f"Pod {self.pod_id} loaded {len(to_pickup)} passengers at {station_id}")
+
+    async def _execute_passenger_delivery(self, station_id: str):
+        """Execute passenger delivery at station"""
+        delivered = [p for p in self.passengers if p.get(
+            'destination') == station_id]
+
+        if not delivered:
+            return
+
+        self.status = PodStatus.UNLOADING
+        await self._publish_status_update()
+
+        # Simulate unloading time: 5 seconds per passenger
+        unload_time = len(delivered) * 5
+        await asyncio.sleep(unload_time)
+
+        # Remove delivered passengers
+        from .model import PassengerDelivered
+        for passenger in delivered:
+            self.passengers.remove(passenger)
+
+            # Calculate travel time if pickup_time is available
+            travel_time = 0
+            if "pickup_time" in passenger:
+                travel_time = int(
+                    (datetime.now(UTC) - passenger["pickup_time"]).total_seconds())
+
+            # Publish delivery event
+            event = PassengerDelivered(
+                passenger_id=passenger.get('passenger_id', ''),
+                pod_id=self.pod_id,
+                station_id=station_id,
+                delivery_time=datetime.now(UTC),
+                total_travel_time=travel_time,
+                satisfaction_score=0.9
+            )
+            await self.publish_event(event)
+
+        self.status = PodStatus.EN_ROUTE
+        logger.info(
+            f"Pod {self.pod_id} delivered {len(delivered)} passengers at {station_id}")
+
+    async def _setup_pickup_delivery_routes(self, stations: list[str]):
+        """Setup pickup and delivery stations for passenger route"""
+        # First station is pickup, remaining are delivery destinations
+        if stations:
+            self.pickup_route = [stations[0]]
+            self.delivery_route = stations[1:] if len(stations) > 1 else []
+            logger.warning(
+                f"Pod {self.pod_id} pickup: {self.pickup_route}, delivery: {self.delivery_route}")
+
     async def _build_decision_context(self) -> DecisionContext:
-        """Build decision context with passenger-specific constraints"""
+        """Build decision context with passenger-specific constraints and available requests"""
         constraints = self.get_pod_constraints()
 
         # Get current location - either station or nearest station if on edge
@@ -633,13 +797,33 @@ class PassengerPod(Pod):
             current_location = network.get_nearest_station(
                 self.location_descriptor.coordinate)
 
+        # Gather available passenger requests from all stations
+        available_requests = []
+        try:
+            from .system import SystemContext
+            system_context = SystemContext.get_instance()
+            network = system_context.get_network_context()
+
+            # Get all stations
+            all_stations = list(network.station_positions.keys())
+
+            for station_id in all_stations:
+                # We can't directly access stations from pod context
+                # This will be populated by the system when assigning routes
+                pass
+        except Exception as e:
+            logger.debug(f"Error gathering requests for {self.pod_id}: {e}")
+
+        # DEBUG
+        # print(
+        #     f"DEBUG Pod: {self.pod_id} building context, id={id(self)}, _available_requests count={len(self._available_requests)}")
         return DecisionContext(
             pod_id=self.pod_id,
             current_location=current_location,
             current_route=self.current_route,
             capacity_available=self.capacity - len(self.passengers),
             weight_available=0.0,  # Passenger pods don't handle weight
-            available_requests=[],  # To be filled by system
+            available_requests=self._available_requests,
             network_state={},
             system_metrics={},
             # Enhanced context with pod type information
@@ -669,11 +853,87 @@ class CargoPod(Pod):
         super().__init__(message_bus, pod_id, routing_provider)
         self.weight_capacity = 500.0  # kg
         self.current_weight = 0.0
-        self.cargo = []  # List[str] IDs
+        self.cargo = []  # List[dict] with request_id, destination, weight
+        self.pickup_route = []  # Stations to pick up cargo from
+        self.delivery_route = []  # Stations to deliver cargo to
 
     def _get_pod_type(self) -> PodType:
         """Return cargo pod type"""
         return PodType.CARGO
+
+    async def _handle_station_arrival(self, station_id: str):
+        """Handle cargo pickup/delivery at station"""
+        self.status = PodStatus.IDLE
+        # set location to station
+        self.location_descriptor = LocationDescriptor(
+            location_type="station", node_id=station_id, coordinate=self.location_descriptor.coordinate,
+        )
+        await self._execute_cargo_pickup(station_id)
+        await self._execute_cargo_delivery(station_id)
+
+    async def _execute_cargo_pickup(self, station_id: str):
+        """Execute cargo pickup at station"""
+        remaining_capacity = self.weight_capacity - self.current_weight
+        if remaining_capacity <= 0:
+            logger.debug(
+                f"Pod {self.pod_id} at weight capacity, skipping pickup at {station_id}")
+            return
+
+        self.status = PodStatus.LOADING
+        await self._publish_status_update()
+
+        # Simulate loading time: 10 seconds per 100kg
+        loading_time = max(10, (len(self.cargo) * 10))
+        await asyncio.sleep(loading_time)
+
+        self.status = PodStatus.EN_ROUTE
+        logger.info(f"Pod {self.pod_id} loaded cargo at {station_id}")
+
+    async def _execute_cargo_delivery(self, station_id: str):
+        """Execute cargo delivery at station"""
+        delivered = [c for c in self.cargo if c.get(
+            'destination') == station_id]
+
+        if not delivered:
+            return
+
+        self.status = PodStatus.UNLOADING
+        await self._publish_status_update()
+
+        # Simulate unloading time: 10 seconds per item
+        unload_time = len(delivered) * 10
+        await asyncio.sleep(unload_time)
+
+        # Remove delivered cargo and update weight
+        for cargo in delivered:
+            self.cargo.remove(cargo)
+            weight = cargo.get('weight', 0)
+            self.current_weight -= weight
+
+            # Publish delivery event
+            from .model import CargoDelivered
+            event = CargoDelivered(
+                request_id=cargo.get('request_id', ''),
+                pod_id=self.pod_id,
+                station_id=station_id,
+                delivery_time=datetime.now(UTC),
+                condition="intact",
+                on_time=True
+            )
+            await self.publish_event(event)
+
+        self.status = PodStatus.EN_ROUTE
+        logger.info(
+            f"Pod {self.pod_id} delivered {len(delivered)} cargo items at {station_id}")
+
+    async def _setup_pickup_delivery_routes(self, stations: list[str]):
+        """Setup pickup and delivery stations for cargo route"""
+        # First station is pickup, remaining are delivery destinations
+        if stations:
+            self.pickup_route = [stations[0]]
+            self.delivery_route = stations[1:] if len(stations) > 1 else []
+            logger.debug(
+                f"Pod {self.pod_id} pickup: {self.pickup_route}, delivery: {self.delivery_route}")
 
     async def _build_decision_context(self) -> DecisionContext:
         """Build decision context with cargo-specific constraints"""
@@ -694,7 +954,7 @@ class CargoPod(Pod):
             current_route=self.current_route,
             capacity_available=0,  # Cargo pods don't handle passenger capacity
             weight_available=self.weight_capacity - self.current_weight,
-            available_requests=[],  # To be filled by system
+            available_requests=self._available_requests,
             network_state={},
             system_metrics={},
             # Enhanced context with pod type information

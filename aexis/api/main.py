@@ -11,7 +11,8 @@ from aexis.core.system import AexisSystem, SystemContext
 logging.basicConfig(
     level=logging.WARN,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("aexis_core.log")],
+    handlers=[logging.StreamHandler(
+        sys.stdout), logging.FileHandler("aexis_core.log")],
 )
 logger = logging.getLogger(__name__)
 
@@ -24,12 +25,13 @@ async def main():
         missing_vars = [var for var in required_vars if not os.getenv(var)]
 
         if missing_vars:
-            logger.error(f"Missing required environment variables: {missing_vars}")
+            logger.error(
+                f"Missing required environment variables: {missing_vars}")
             return
 
         logger.info("Starting AEXIS Core System...")
 
-        context = await SystemContext.initialize('aexis.json')
+        context = await SystemContext.initialize('/home/godelhaze/dev/megalith/aexis/aexis/aexis.json')
 
         # Initialize System
         system = AexisSystem(context)
@@ -48,7 +50,8 @@ async def main():
         host = os.getenv("API_HOST", "0.0.0.0")
         port = int(os.getenv("API_PORT", "8001"))
 
-        logger.warning(f"Starting System API on {host}:{port} from {os.getcwd()}")
+        logger.warning(
+            f"Starting System API on {host}:{port} from {os.getcwd()}")
 
         config = uvicorn.Config(
             app=app,
@@ -61,6 +64,9 @@ async def main():
         # Run server and system concurrently
         # We need to manage the shutdown sequence carefully
 
+        # logger.warning("Triggering pod decisions")
+        # for pod in system.pods.values():
+        #     await pod._execute_decision(pod.decision)
         try:
             await server.serve()
         finally:

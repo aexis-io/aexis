@@ -1,19 +1,19 @@
-from .network import (
-    NetworkContext,
-    load_network_data,
-)
 import asyncio
 import json
 import logging
 import os
 import random
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any, Mapping
 
 from .ai_provider import AIProviderFactory
 from .errors import handle_exception
 from .message_bus import MessageBus
 from .model import SystemSnapshot
+from .network import (
+    NetworkContext,
+    load_network_data,
+)
 from .pod import CargoPod, PassengerPod, Pod
 from .routing import RoutingProvider
 from .station import CargoGenerator, PassengerGenerator, Station
@@ -25,7 +25,7 @@ class AexisConfig:
     """Configuration for Aexis system"""
 
     def __init__(
-        self, debug: bool = False, network_data_path: str | None = None, **kwargs
+            self, debug: bool = False, network_data_path: str | None = None, **kwargs
     ):
         self.debug = debug
         self.network_data_path = network_data_path
@@ -124,6 +124,7 @@ class SystemContext:
 
             # Load network data and initialize NetworkContext
             network_path = self._config.network_data_path
+            logger.warning(f"Loading network data from {network_path}")
             network_data = load_network_data(network_path)
             self._network_context = NetworkContext(network_data)
 
@@ -177,17 +178,20 @@ class SystemContext:
 class AexisSystem:
     """Main system coordinator for AEXIS transportation network"""
 
-    def __init__(self, system_context: SystemContext = None):
+    def __init__(self, system_context: SystemContext = None, message_bus: MessageBus = None):
         # Use provided SystemContext or get the instance
         self.system_context = system_context or SystemContext.get_instance()
         self.config = self.system_context.get_config()
         self.network_context = self.system_context.get_network_context()
 
-        # Initialize message bus with configuration
-        self.message_bus = MessageBus(
-            redis_url=self.config.get('redis.url', "redis://localhost:6379"),
-            password=self.config.get('redis.password'),
-        )
+        # Initialize message bus with configuration or use injected one
+        if message_bus:
+            self.message_bus = message_bus
+        else:
+            self.message_bus = MessageBus(
+                redis_url=self.config.get('redis.url', "redis://localhost:6379"),
+                password=self.config.get('redis.password'),
+            )
         self.ai_provider = None
         self.pods: Mapping[str, Pod] = {}
         self.stations = {}
@@ -253,6 +257,73 @@ class AexisSystem:
                 f"System initialization failed: {error_details.message}")
             return False
 
+    async def _setup_subscriptions(self):
+        """Subscribe to system-wide events for reactive behavior"""
+        self.message_bus.subscribe(
+            MessageBus.CHANNELS["PASSENGER_EVENTS"], self._handle_event
+        )
+        self.message_bus.subscribe(
+            MessageBus.CHANNELS["CARGO_EVENTS"], self._handle_event
+        )
+
+    async def _handle_event(self, data: dict):
+        """Handle incoming events and trigger reactive actions"""
+        try:
+            from .model import PodStatus
+            message = data.get("message", {})
+            event_type = message.get("event_type", "")
+
+            # React to arrivals by triggering idle pods
+            if event_type in ["PassengerArrival", "CargoRequest"]:
+                station_id = message.get("station_id") or message.get("origin")
+                logger.warning(f"Station {station_id} processing event")
+                
+                # First, prioritize pods already at the station
+                if station_id:
+                    for pod in self.pods.values():
+                        st = pod.status.value 
+                        at_station = self._pod_is_at_station(pod, station_id)
+                        logger.warning(f"Pod {pod.pod_id} is {st} and {at_station or 'not'} at station {station_id}")
+                        if pod.status.value == "idle" and self._pod_is_at_station(pod, station_id):
+                            logger.warning(f"Pod {pod.pod_id} is idle => {pod.status != PodStatus.IDLE}")
+                            logger.warning(f"Prioritizing docked pod {pod.pod_id} at {station_id} for new {event_type}")
+                            await self._populate_pod_requests(pod)
+                            if len(pod._available_requests) > 0:
+                                await pod.make_decision()
+                
+                # Then, trigger other idle pods globally if no local pods available
+                for pod in self.pods.values():
+                    # logger.warning(f"Checking pod {pod.pod_id} for event {event_type} at station {station_id}")
+                    if pod.status.value == "idle" and not self._pod_is_at_station(pod, station_id):
+                        await self._populate_pod_requests(pod)
+                        if len(pod._available_requests) > 0:
+                            await pod.make_decision()
+
+        except Exception as e:
+            logger.debug(f"AexisSystem event handling error: {e}")
+
+    def _pod_is_at_station(self, pod: Pod, station_id: str) -> bool:
+        """Check if pod is currently at the specified station"""
+        try:
+            # Check if pod's location descriptor indicates it's at the station
+            if (pod.location_descriptor.location_type == "station" and 
+                pod.location_descriptor.node_id == station_id):
+                return True
+            
+            # Check if pod is on an edge connected to this station
+            if (pod.location_descriptor.location_type == "edge" and 
+                pod.current_segment):
+                # Pod is considered "at" station if it's very close to either end
+                edge = pod.current_segment
+                if (edge.start_node == station_id or edge.end_node == station_id) and \
+                   pod.segment_progress < 5.0:  # Within 5 meters of station
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking pod location: {e}")
+            return False
+
     async def _initialize_ai_provider(self):
         """Initialize AI provider based on configuration"""
         try:
@@ -308,23 +379,26 @@ class AexisSystem:
             pod_tasks.append(asyncio.create_task(pod.start()))
 
         # Start generators
-        generator_tasks = []
-        if self.passenger_generator:
-            generator_tasks.append(
-                asyncio.create_task(self.passenger_generator.start())
-            )
-        if self.cargo_generator:
-            generator_tasks.append(asyncio.create_task(
-                self.cargo_generator.start()))
+        # generator_tasks = []
+        # if self.passenger_generator:
+        #     generator_tasks.append(
+        #         asyncio.create_task(self.passenger_generator.start())
+        #     )
+        # if self.cargo_generator:
+        #     generator_tasks.append(asyncio.create_task(
+        #         self.cargo_generator.start()))
 
         # Start system monitoring
         monitor_task = asyncio.create_task(self._system_monitor())
 
         # Start periodic decision making
-        decision_task = asyncio.create_task(self._periodic_decision_making())
+        # decision_task = asyncio.create_task(self._periodic_decision_making())
 
         # Start pod movement simulation (Phase 1)
         movement_task = asyncio.create_task(self._simulate_pod_movement())
+
+        # Setup subscriptions for reactive behavior AFTER components are started
+        await self._setup_subscriptions()
 
         logger.info("AEXIS system started")
 
@@ -334,9 +408,9 @@ class AexisSystem:
                 message_bus_task,
                 *station_tasks,
                 *pod_tasks,
-                *generator_tasks,
+                # *generator_tasks,
                 monitor_task,
-                decision_task,
+                # decision_task,
                 movement_task,
                 return_exceptions=True,
             )
@@ -505,7 +579,7 @@ class AexisSystem:
             pod.segment_progress = distance_on_edge
 
             # Mark as en route so movement simulation will update it
-            pod.status = PodStatus.EN_ROUTE
+            pod.status = PodStatus.IDLE
 
             # Set location descriptor with precise position
             pod.location_descriptor = LocationDescriptor(
@@ -522,6 +596,8 @@ class AexisSystem:
                 f"Created {pod_type}Pod: {pod_id} on edge {edge_id} "
                 f"at position ({coordinate.x:.1f}, {coordinate.y:.1f})"
             )
+
+            await pod.make_decision()
 
             # Publish initial position update for UI rendering
             # Use asyncio.create_task to fire-and-forget without blocking pod creation
@@ -564,7 +640,7 @@ class AexisSystem:
         logger.info("Setup passenger and cargo generators")
 
     def _get_connected_stations(
-        self, station_id: str, all_stations: list[str]
+            self, station_id: str, all_stations: list[str]
     ) -> list[str]:
         """Get connected stations creating a complex mesh topology"""
         station_index = all_stations.index(station_id)
@@ -587,8 +663,8 @@ class AexisSystem:
             # Connect to nearest hub
             nearest_hub_idx = (station_index // 4) * 4
             if (
-                all_stations[nearest_hub_idx] not in connected
-                and nearest_hub_idx != station_index
+                    all_stations[nearest_hub_idx] not in connected
+                    and nearest_hub_idx != station_index
             ):
                 connected.append(all_stations[nearest_hub_idx])
 
@@ -598,7 +674,7 @@ class AexisSystem:
         hash_val = int(hashlib.md5(
             f"{station_id}_salt".encode()).hexdigest(), 16)
         random_offset = (hash_val % (total_stations - 3)) + \
-            2  # Avoid self, prev, next
+                        2  # Avoid self, prev, next
         random_idx = (station_index + random_offset) % total_stations
         target = all_stations[random_idx]
         if target not in connected and target != station_id:
@@ -632,6 +708,8 @@ class AexisSystem:
                 # Trigger decision making for idle pods
                 for pod in self.pods.values():
                     if pod.status.value == "idle":
+                        # Populate available requests from queues before decision
+                        await self._populate_pod_requests(pod)
                         await pod.make_decision()
 
                 # Wait before next round
@@ -641,6 +719,53 @@ class AexisSystem:
                 logger.debug(
                     f"Periodic decision making error: {e}", exc_info=True)
                 await asyncio.sleep(60)
+
+    async def _populate_pod_requests(self, pod: Pod):
+        """Populate available requests in pod's decision context
+        
+        Gathers waiting passengers/cargo from all stations and
+        makes them available for the pod's routing decision.
+        """
+        try:
+            from .pod import PassengerPod, CargoPod
+            from .model import Priority
+
+            available_requests = []
+
+            if isinstance(pod, PassengerPod):
+                # Gather passenger requests from all stations
+                for station_id, station in self.stations.items():
+                    for passenger in station.passenger_queue:
+                        available_requests.append({
+                            "type": "passenger",
+                            "passenger_id": passenger.get("passenger_id", ""),
+                            "origin": station_id,
+                            "destination": passenger.get("destination", ""),
+                            "priority": passenger.get("priority", Priority.NORMAL.value),
+                            "wait_time": (datetime.now(UTC) - passenger.get("arrival_time",
+                                                                            datetime.now(UTC))).total_seconds()
+                        })
+
+            elif isinstance(pod, CargoPod):
+                # Gather cargo requests from all stations
+                for station_id, station in self.stations.items():
+                    for cargo in station.cargo_queue:
+                        available_requests.append({
+                            "type": "cargo",
+                            "request_id": cargo.get("request_id", ""),
+                            "origin": station_id,
+                            "destination": cargo.get("destination", ""),
+                            "weight": cargo.get("weight", 0.0),
+                            "priority": cargo.get("priority", Priority.NORMAL.value),
+                            "wait_time": (datetime.now(UTC) - cargo.get("arrival_time",
+                                                                        datetime.now(UTC))).total_seconds()
+                        })
+
+            # Store in pod's context (will be used by router)
+            pod._available_requests = available_requests
+
+        except Exception as e:
+            logger.debug(f"Error populating requests for {pod.pod_id}: {e}")
 
     async def _simulate_pod_movement(self):
         """Simulate pod movement with continuous path integration
@@ -707,7 +832,7 @@ class AexisSystem:
             if station.average_wait_time > 0
         ]
         avg_wait_time = sum(wait_times) / \
-            len(wait_times) if wait_times else 0.0
+                        len(wait_times) if wait_times else 0.0
 
         # Calculate system efficiency (simplified)
         total_processed = sum(
@@ -797,38 +922,40 @@ class AexisSystem:
         return pod.get_state() if pod else None
 
     async def inject_passenger_request(
-        self, origin_id: str, dest_id: str, count: int = 1
+            self, origin_id: str, dest_id: str, count: int = 1
     ):
         """Manually inject passenger request"""
-        if self.passenger_generator:
-            for _ in range(count):
-                # Manually create request via generator logic or directly to event bus
-                # Direct event bus is cleaner
-                passenger_id = f"manual_p_{datetime.now().strftime('%H%M%S')}_{random.randint(100, 999)}"
-                event = self.passenger_generator._create_manual_event(
-                    passenger_id, origin_id, dest_id
-                )
-                await self.message_bus.publish_event(
-                    MessageBus.get_event_channel(event.event_type), event
-                )
-                logger.info(
-                    f"Manually injected passenger {passenger_id} at {origin_id} -> {dest_id}"
-                )
+        if not self.passenger_generator:
+            raise RuntimeError("Passenger generator not initialized")
 
-    async def inject_cargo_request(
-        self, origin_id: str, dest_id: str, weight: float = 100.0
-    ):
-        """Manually inject cargo request"""
-        if self.cargo_generator:
-            request_id = f"manual_c_{datetime.now().strftime('%H%M%S')}_{random.randint(100, 999)}"
-            event = self.cargo_generator._create_manual_event(
-                request_id, origin_id, dest_id, weight
+        for _ in range(count):
+            passenger_id = f"manual_p_{datetime.now().strftime('%H%M%S')}_{random.randint(100, 999)}"
+            event = self.passenger_generator._create_manual_event(
+                passenger_id, origin_id, dest_id
             )
             await self.message_bus.publish_event(
                 MessageBus.get_event_channel(event.event_type), event
             )
-            print(
-                f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
+            logger.info(
+                f"Manually injected passenger {passenger_id} at {origin_id} -> {dest_id}"
+            )
+
+    async def inject_cargo_request(
+            self, origin_id: str, dest_id: str, weight: float = 100.0
+    ):
+        """Manually inject cargo request"""
+        if not self.cargo_generator:
+            raise RuntimeError("Cargo generator not initialized")
+
+        request_id = f"manual_c_{datetime.now().strftime('%H%M%S')}_{random.randint(100, 999)}"
+        event = self.cargo_generator._create_manual_event(
+            request_id, origin_id, dest_id, weight
+        )
+        channel = MessageBus.get_event_channel(event.event_type)
+        logger.warning(f"Publishing manual cargo event to channel {channel} with request_id {request_id}")
+        await self.message_bus.publish_event(channel, event)
+        logger.warning(
+            f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
 
     def get_station_state(self, station_id: str) -> dict | None:
         """Get specific station state"""

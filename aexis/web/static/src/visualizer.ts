@@ -149,6 +149,10 @@ class NetworkVisualizer {
   pods: Map<string, Pod>;
   stationPayloads: Map<string, StationPayload>;
   indicatorLayer: PIXI.Container | null;
+  labelLayer: PIXI.Container | null = null;
+  hoveredLabel: PIXI.Text | null = null;
+  hoveredNodeId: string | null = null;
+
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId);
@@ -193,6 +197,7 @@ class NetworkVisualizer {
     this.spineLayer = null;
     this.nodeLayer = null;
     this.podLayer = null;
+    this.labelLayer = null;
     this.indicatorLayer = null;
 
     this.init();
@@ -226,6 +231,9 @@ class NetworkVisualizer {
     this.indicatorLayer = new PIXI.Container();
     this.viewport.addChild(this.indicatorLayer);
 
+    this.labelLayer = new PIXI.Container();
+    this.viewport.addChild(this.labelLayer);
+
     // Interaction
     this.setupInteraction();
 
@@ -236,6 +244,15 @@ class NetworkVisualizer {
     this.drawGrid();
     this.drawSpines();
     this.drawNodes();
+
+    this.labelLayer.interactive = true;
+    this.labelLayer.interactiveChildren = false;
+    this.labelLayer.hitArea = new PIXI.Rectangle(0, 0, 10000, 10000); // Full canvas
+
+
+    this.labelLayer.on('pointermove', (event: PIXI.FederatedPointerEvent) => {
+      this.handlePodHover(event);
+    });
 
     // Tick
     this.app.ticker.add((delta: number) => this.animate(delta));
@@ -354,16 +371,17 @@ class NetworkVisualizer {
    * Handle real-time pod position updates from WebSocket
    */
   handlePodPositionUpdate(positionData: any): void {
+    console.log("Received PodPositionUpdate: ", positionData);
     if (!positionData?.pod_id) {
       return;
     }
     // console.log("visualizer.handlePodPositionUpdate: received data:", positionData);
     const podId = positionData.pod_id;
     const location = positionData.location;
-    
+
     // Extract pod type - check positionData first, then fallback to existing pod data
     const podType = (positionData.pod_type || (positionData as any).data?.pod_type || this.pods.get(podId)?.podType || 'passenger') as 'cargo' | 'passenger';
-    
+
     // console.log(`visualizer.handlePodPositionUpdate: pod ${podId} at location `, location)
     let pod = this.pods.get(podId);
     // console.log("visualizer.handlePodPositionUpdate: found pod with id from  ", this.pods);
@@ -388,7 +406,7 @@ class NetworkVisualizer {
     if (location) {
       // Correctly track spineId and station status
       const isAtStation = location.location_type === 'station' || !!location.node_id;
-      
+
       pod.data = {
         ...pod.data,
         location: location,
@@ -422,7 +440,6 @@ class NetworkVisualizer {
           }
         }
       }
-      console.log("visualizer.handlePodPositionUpdate: pod after update: ", pod);
     }
   }
 
@@ -481,6 +498,7 @@ class NetworkVisualizer {
     const color = type === 'passenger' ? 0xffff00 : 0xaa00ff; // Yellow for passenger, purple for cargo
 
     // Small circle offset from station center
+
     const existingCount = Array.from(this.stationPayloads.values()).filter(p => p.stationId === stationId).length;
     const angle = (existingCount * 0.5) + Math.random() * 0.3;
     const radius = 20 + existingCount * 3;
@@ -491,7 +509,7 @@ class NetworkVisualizer {
     gfx.drawCircle(0, 0, 5);
     gfx.endFill();
 
-    gfx.beginFill(0xffffff, 1);
+    gfx.beginFill(0xffffff, 0.5);
     gfx.drawCircle(0, 0, 2);
     gfx.endFill();
 
@@ -619,7 +637,7 @@ class NetworkVisualizer {
       // 2. Correction: Gently pull towards the authoritative server position (targetDistance)
       // This prevents divergence over time while maintaining smooth motion
       const error = pod.targetDistance - pod.distanceAlongPath;
-      
+
       // If error is small, use lerp to smooth it out. If massive, we already snapped in the handler.
       if (Math.abs(error) > 0.1) {
         pod.distanceAlongPath += error * lerpFactor;
@@ -646,8 +664,6 @@ class NetworkVisualizer {
     try {
       const response = await fetch('/api/network');
       const data = await response.json() as NetworkData;
-      console.log('Got network data', data);
-
       // Apply layout scale to coordinates if needed, or assume they are pre-scaled
       // For this network.json, coordinates look like -700, 800, so likely no scale needed or scale = 1
       if (this.config.layoutScale !== 1) {
@@ -872,6 +888,98 @@ class NetworkVisualizer {
     }
   }
 
+  getPodAtPosition(x: number, y: number, radius: number = 15): any | null {
+    for (const pod of this.pods.values()) {
+      const coordinate = pod.data?.coordinate as { x: number, y: number };
+      const dist = Math.sqrt((x - coordinate?.x) ** 2 + (y - coordinate?.y) ** 2);
+      if (dist <= radius) return pod;
+    }
+    return null;
+  }
+
+  showPodLabel(pod: any): void {
+    const style = new PIXI.TextStyle({
+      fontFamily: 'monospace',
+      fontSize: 12,
+      fill: 0xffffff,
+      stroke: { color: 0x000000, width: 1 },
+      dropShadow: true,
+      dropShadowColor: 0x000000,
+      dropShadowBlur: 2,
+    });
+
+    const labelText = pod.id
+    this.hoveredLabel = new PIXI.Text(labelText, style);
+
+    // Top-right positioning
+    this.hoveredLabel.x = pod.x + 15;
+    this.hoveredLabel.y = pod.y - 20;
+
+    this.labelLayer!.addChild(this.hoveredLabel);
+  }
+
+  handlePodHover(event: PIXI.FederatedPointerEvent): void {
+    const pos = event.getLocalPosition(this.podLayer!);
+    const pod = this.getPodAtPosition(pos.x, pos.y);
+
+    if (pod && pod.id !== this.hoveredNodeId) {
+      // Hide previous label
+      if (this.hoveredLabel) {
+        this.labelLayer!.removeChild(this.hoveredLabel);
+        this.hoveredLabel.destroy();
+        this.hoveredLabel = null;
+      }
+
+      // Show new label
+      this.showPodLabel(pod);
+      this.hoveredNodeId = pod.id;
+    } else if (!pod && this.hoveredNodeId) {
+      // Hide label when no node hovered
+      if (this.hoveredLabel) {
+        this.labelLayer!.removeChild(this.hoveredLabel);
+        this.hoveredLabel.destroy();
+        this.hoveredLabel = null;
+      }
+      this.hoveredNodeId = null;
+    }
+  }
+
+  drawPodLabel(): void {
+
+  }
+
+  drawNodeLabel(): void {
+    if (!this.labelLayer) return;
+    this.labelLayer.removeChildren();  // Clear previous labels
+
+    const style = new PIXI.TextStyle({
+      fontFamily: 'Arial',
+      fontSize: 12,
+      fill: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3,
+      dropShadow: {
+        color: '#000000',
+        distance: 4,
+        angle: Math.PI / 4,
+        alpha: 0.5,
+      },
+    });
+
+    for (const node of this.nodes.values()) {
+      const labelText = `S${node.id}`;
+      const label = new PIXI.Text(labelText, style);
+
+      // Position: top-right of node (offset by radius + padding)
+      label.x = node.x + 15;  // Right of center (12px radius + 3px pad)
+      label.y = node.y - 20;  // Above center (label height/2 ~15px + pad)
+
+      // Optional: anchor top-left so x/y is exact top-left corner
+      // label.anchor.set(0, 0);
+      this.labelLayer.addChild(label);
+    }
+
+  }
   /**
    * Renders topological nodes.
    */
@@ -889,6 +997,8 @@ class NetworkVisualizer {
       this.nodeLayer.drawCircle(node.x, node.y, 3.5);
       this.nodeLayer.endFill();
     }
+
+    this.drawNodeLabel();
   }
 }
 

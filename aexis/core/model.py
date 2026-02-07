@@ -332,3 +332,11 @@ class PodPositionUpdate(Event):
     status: str = "idle"
     speed: float = 0.0
     current_route: Optional[list[str]] = None
+
+@dataclass
+class PodArrival(Event):
+    """Event for pod arriving at a station"""
+    event_type: str = "PodArrival"
+    pod_id: str = ""
+    station_id: str = ""
+    timestamp: datetime = field(default_factory=datetime.utcnow)

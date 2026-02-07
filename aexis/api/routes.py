@@ -8,8 +8,22 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from ..core.errors import handle_exception
 from ..core.system import AexisSystem
+from pydantic import BaseModel
+
 
 logger = logging.getLogger(__name__)
+
+
+class PassengerRequestModel(BaseModel):
+    origin: str
+    destination: str
+    count: int = 1
+
+
+class CargoRequestModel(BaseModel):
+    origin: str
+    destination: str
+    weight: float = 100.0
 
 
 class SystemAPI:
@@ -108,12 +122,12 @@ class SystemAPI:
                     status_code=500, detail=error_details.message)
 
         @self.app.post("/api/manual/passenger")
-        async def inject_passenger(request: dict):
+        async def inject_passenger(payload: PassengerRequestModel):
             try:
                 # Input validation with specific error messages
-                origin = (request.get("origin", "") or "").strip()
-                dest = (request.get("destination", "") or "").strip()
-                count = request.get("count", 1)
+                origin = payload.origin.strip()
+                dest = payload.destination.strip()
+                count = payload.count
 
                 if not origin:
                     raise HTTPException(
@@ -129,13 +143,6 @@ class SystemAPI:
                         detail="origin and destination must be different stations",
                     )
 
-                # Validate count
-                try:
-                    count = int(count)
-                except (TypeError, ValueError):
-                    raise HTTPException(
-                        status_code=400, detail="count must be an integer"
-                    )
                 if count <= 0:
                     raise HTTPException(
                         status_code=400, detail="count must be positive"
@@ -159,18 +166,20 @@ class SystemAPI:
 
                 await self.system.inject_passenger_request(origin, dest, count)
                 return {"status": "success", "message": f"Injected {count} passengers"}
+            except HTTPException:
+                raise
             except Exception as e:
                 error_details = handle_exception(e, "SystemAPI")
                 raise HTTPException(
                     status_code=500, detail=error_details.message)
 
         @self.app.post("/api/manual/cargo")
-        async def inject_cargo(request: dict):
+        async def inject_cargo(payload: CargoRequestModel):
             try:
                 # Input validation with specific error messages
-                origin = (request.get("origin", "") or "").strip()
-                dest = (request.get("destination", "") or "").strip()
-                weight = request.get("weight", 100.0)
+                origin = payload.origin.strip()
+                dest = payload.destination.strip()
+                weight = payload.weight
 
                 if not origin:
                     raise HTTPException(
@@ -186,13 +195,7 @@ class SystemAPI:
                         detail="origin and destination must be different stations",
                     )
 
-                # Validate weight
-                try:
-                    weight = float(weight)
-                except (TypeError, ValueError):
-                    raise HTTPException(
-                        status_code=400, detail="weight must be a valid number"
-                    )
+                # Weight is already validated by Pydantic model
                 if weight <= 0:
                     raise HTTPException(
                         status_code=400, detail="weight must be positive"
@@ -218,7 +221,9 @@ class SystemAPI:
                 )
 
                 await self.system.inject_cargo_request(origin, dest, weight)
-                return {"status": "success", "message": "Injected cargo request"}
+                return {"status": "success", "message": f"Injected {weight}kg cargo"}
+            except HTTPException:
+                raise
             except Exception as e:
                 error_details = handle_exception(e, "SystemAPI")
                 raise HTTPException(
