@@ -344,17 +344,17 @@ class AexisSystem:
             # React to arrivals by triggering idle pods
             if event_type in ["PassengerArrival", "CargoRequest"]:
                 station_id = event_data.get("station_id") or event_data.get("origin")
-                logger.warning(f"Station {station_id} processing event")
+                # logger.warning(f"Station {station_id} processing event")
                 
                 # First, prioritize pods already at the station
                 if station_id:
                     for pod in self.pods.values():
                         st = pod.status.value 
                         at_station = self._pod_is_at_station(pod, station_id)
-                        logger.warning(f"Pod {pod.pod_id} is {st} and {at_station or 'not'} at station {station_id}")
+                        # logger.warning(f"Pod {pod.pod_id} is {st} and {at_station or 'not'} at station {station_id}")
                         if (pod.status == PodStatus.IDLE or pod.status.value == "idle") and self._pod_is_at_station(pod, station_id):
-                            logger.warning(f"Pod {pod.pod_id} is idle => {pod.status != PodStatus.IDLE}")
-                            logger.warning(f"Prioritizing docked pod {pod.pod_id} at {station_id} for new {event_type}")
+                            # logger.warning(f"Pod {pod.pod_id} is idle => {pod.status != PodStatus.IDLE}")
+                            # logger.warning(f"Prioritizing docked pod {pod.pod_id} at {station_id} for new {event_type}")
                             await self._populate_pod_requests(pod)
                             if seeded_request:
                                 if seeded_request.get("type") == "passenger":
@@ -478,7 +478,7 @@ class AexisSystem:
         monitor_task = asyncio.create_task(self._system_monitor())
 
         # Start periodic decision making
-        # decision_task = asyncio.create_task(self._periodic_decision_making())
+        decision_task = asyncio.create_task(self._periodic_decision_making())
 
         # Start pod movement simulation (Phase 1)
         movement_task = asyncio.create_task(self._simulate_pod_movement())
@@ -496,7 +496,7 @@ class AexisSystem:
                 *pod_tasks,
                 # *generator_tasks,
                 monitor_task,
-                # decision_task,
+                decision_task,
                 movement_task,
                 return_exceptions=True,
             )
@@ -907,6 +907,11 @@ class AexisSystem:
                 logger.debug(
                     f"Pod movement simulation error: {e}", exc_info=True)
                 await asyncio.sleep(target_interval)
+            
+            # Instrumentation: Check for slow ticks
+            duration = loop.time() - now
+            if duration > 0.15: # 150ms logging threshold
+                 logger.warning(f"Slow system tick: {duration*1000:.1f}ms (target 100ms)")
 
     async def _update_metrics(self):
         """Update system metrics"""
@@ -1057,10 +1062,10 @@ class AexisSystem:
             request_id, origin_id, dest_id, weight
         )
         channel = MessageBus.get_event_channel(event.event_type)
-        logger.warning(f"Publishing manual cargo event to channel {channel} with request_id {request_id}")
+        # logger.warning(f"Publishing manual cargo event to channel {channel} with request_id {request_id}")
         await self.message_bus.publish_event(channel, event)
-        logger.warning(
-            f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
+        # logger.warning(
+        #     f"Manually injected cargo {request_id} at {origin_id} -> {dest_id}")
 
     def get_station_state(self, station_id: str) -> dict | None:
         """Get specific station state"""

@@ -165,9 +165,9 @@ class Station(EventProcessor):
         self.passenger_queue.append(passenger)
         self._update_congestion_level()
 
-        logger.warning(
-            f"Station {self.station_id}: Passenger {passenger_id} added to queue (queue size: {len(self.passenger_queue)})"
-        )
+        # logger.warning(
+        #     f"Station {self.station_id}: Passenger {passenger_id} added to queue (queue size: {len(self.passenger_queue)})"
+        # )
 
         # Check if congestion alert is needed
         if self.congestion_level > 0.7:
@@ -193,8 +193,8 @@ class Station(EventProcessor):
             "deadline": event_data.get("deadline"),
             "arrival_time": datetime.now(UTC),
         }
-        logger.warning(
-            f"Station {self.station_id}: Received cargo request {request_id} with weight {cargo['weight']} and volume {cargo['volume']}")
+        # logger.warning(
+        #     f"Station {self.station_id}: Received cargo request {request_id} with weight {cargo['weight']} and volume {cargo['volume']}")
 
         self.cargo_queue.append(cargo)
         self._update_congestion_level()
@@ -227,8 +227,8 @@ class Station(EventProcessor):
         self._update_congestion_level()
         self._update_wait_time_metrics()
 
-        logger.warning(
-            f"Station {self.station_id}: Passenger {passenger_id} picked up")
+        # logger.warning(
+        #     f"Station {self.station_id}: Passenger {passenger_id} picked up")
 
     async def _handle_cargo_loading(self, event_data: dict):
         """Handle cargo loading by pod"""

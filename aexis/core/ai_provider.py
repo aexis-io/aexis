@@ -29,8 +29,10 @@ class AIProvider(ABC):
 class GeminiAIProvider(AIProvider):
     """Gemini 3 AI provider implementation"""
 
-    def __init__(self, client):
+    def __init__(self, client, daily_limit: int = 100):
         self.client = client
+        self.daily_limit = daily_limit
+        self.call_count = 0
         self.thought_signature = None
 
     async def make_decision(self, context: DecisionContext) -> Decision:
@@ -43,18 +45,29 @@ class GeminiAIProvider(AIProvider):
                     context={"pod_id": context.pod_id},
                 )
 
+            if self.call_count >= self.daily_limit:
+                logger.warning(f"Daily limit reached for Gemini provider ({self.daily_limit})")
+                raise create_error(
+                    ErrorCode.AI_PROVIDER_LIMIT_REACHED,
+                    component="GeminiAIProvider",
+                    context={"limit": self.daily_limit},
+                )
+
             prompt = self._build_prompt(context)
             response = await self._call_gemini(prompt)
-            decision = self._parse_response(response)
+            decision = self._parse_response(response, context)
 
-            self.thought_signature = (
-                response.candidates[0].content if response.candidates else None
-            )
+            # Update state
+            self.call_count += 1
+            if response.candidates:
+                # Store the thought process for continuity, if available
+                # Note: This depends on the specific model response structure
+                pass
 
             return decision
 
         except Exception as e:
-            logger.debug(f"Gemini AI decision failed: {e}", exc_info=True)
+            logger.error(f"Gemini AI decision failed: {e}", exc_info=True)
             raise
 
     def is_available(self) -> bool:
@@ -68,75 +81,151 @@ class GeminiAIProvider(AIProvider):
         """Call Gemini API with proper configuration"""
         from google.genai import types
 
+        # Pydantic-based schema for structured output (if supported) or strict JSON instruction
+        # For now, we use a strong system prompt and JSON mode if available, 
+        # but the google-genai SDK 0.1+ supports response_mime_type="application/json"
+        
         config = types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=1000,
+            temperature=0.2,  # Low temperature for deterministic routing
+            max_output_tokens=2048,
             system_instruction=self._get_system_instruction(),
+            response_mime_type="application/json",
         )
 
-        response = await self.client.aio.models.generate_content(
-            model="gemini-3-pro-preview", contents=prompt, config=config
-        )
-
-        return response
+        try:
+            import asyncio
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model="gemini-2.0-flash-001",
+                    contents=prompt,
+                    config=config,
+                ),
+                timeout=30.0
+            ) 
+            return response
+        except asyncio.TimeoutError:
+            logger.error("Gemini API call timed out after 30s")
+            raise create_error(
+                ErrorCode.AI_PROVIDER_TIMEOUT,
+                component="GeminiAIProvider",
+                context={"timeout": 30.0}
+            )
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            raise
 
     def _build_prompt(self, context: DecisionContext) -> str:
         """Build comprehensive prompt for decision making"""
-        # This would contain the same prompt logic as before
-        # but isolated within the Gemini provider
-        return f"Analyze transportation scenario for pod {context.pod_id}..."
+        import json
+        
+        # Serialize context
+        # We need to be careful with datetime objects and non-serializable types
+        # Using a helper or manual dict construction
+        
+        ctx_data = {
+            "pod_id": context.pod_id,
+            "current_location": context.current_location,
+            "capacity": {"available": context.capacity_available},
+            "weight": {"available": context.weight_available},
+            "passengers": context.passengers if context.passengers else [],
+            "cargo": context.cargo if context.cargo else [],
+            "requests": context.available_requests,
+            "network_status": context.network_state,
+        }
+        
+        return f"""
+Analyze the following transportation scenario and make a routing decision.
+
+Context:
+{json.dumps(ctx_data, indent=2, default=str)}
+
+Task:
+1. Evaluate all available requests against pod constraints (capacity, weight).
+2. Optimize for efficiency (time/distance) and priority.
+3. Determine which requests to accept and which to reject.
+4. Plan a route (sequence of station IDs) to service accepted requests and current payload.
+5. Provide a confidence score and reasoning.
+
+Output MUST be a valid JSON object matching the Decision schema.
+"""
 
     def _get_system_instruction(self) -> str:
         """Get system instruction with thought signature"""
-        base_instruction = "You are an intelligent transportation decision system..."
+        return """
+You are the AEXIS Central Routing Intelligence. Your goal is to optimize pod routing for a futuristic hyperloop network.
+You must prioritize:
+1. Passenger safety and comfort.
+2. Delivery deadlines for cargo.
+3. System efficiency (minimizing empty travel).
 
-        if self.thought_signature:
-            return f"{base_instruction}\n\nPrevious Thought Context:\n{self.thought_signature}"
+You must output ONLY valid JSON.
+The JSON schema is:
+{
+    "accepted_requests": ["request_id_1", ...],
+    "rejected_requests": ["request_id_2", ...],
+    "route": ["station_a", "station_b", ...],
+    "estimated_duration": <int_minutes>,
+    "confidence": <float_0_to_1>,
+    "reasoning": "<string_explanation>"
+}
+Do not include markdown code blocks (```json ... ```) in the output, just the raw JSON string.
+"""
 
-        return base_instruction
-
-    def _parse_response(self, response) -> Decision:
+    def _parse_response(self, response, context: DecisionContext) -> Decision:
         """Parse Gemini response into Decision object"""
-        # This would contain the same parsing logic as before
-        # but isolated within the Gemini provider
         import json
+        
+        text = ""
+        try:
+            if not response.candidates:
+                raise ValueError("No candidates returned")
+                
+            # Extract text
+            candidate = response.candidates[0]
+            if not candidate.content or not candidate.content.parts:
+                 raise ValueError("Empty content in candidate")
+                 
+            text = candidate.content.parts[0].text
+            
+            # Clean up potential markdown formatting if the model disregards the "no markdown" instruction
+            text = text.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            
+            data = json.loads(text)
+            
+            # Validation
+            required_fields = ["accepted_requests", "route", "confidence"]
+            for field in required_fields:
+                if field not in data:
+                     raise ValueError(f"Missing required field: {field}")
 
-        if not response.candidates:
+            return Decision(
+                decision_type="route_selection",
+                accepted_requests=data.get("accepted_requests", []),
+                rejected_requests=data.get("rejected_requests", []),
+                route=data.get("route", [context.current_location]),
+                estimated_duration=data.get("estimated_duration", 0),
+                confidence=float(data.get("confidence", 0.0)),
+                reasoning=data.get("reasoning", "Gemini decision"),
+                fallback_used=False,
+            )
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON from Gemini: {e}\nResponse text: {text}")
             raise create_error(
                 ErrorCode.GEMINI_RESPONSE_PARSING_FAILED,
                 component="GeminiAIProvider",
-                context={"reason": "No candidates in response"},
+                context={"error": str(e), "text_snippet": text[:100]}
             )
-
-        content = (
-            response.candidates[0].content.parts[0].text
-            if response.candidates[0].content.parts
-            else ""
-        )
-
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-
-        if json_start == -1 or json_end == 0:
-            raise create_error(
-                ErrorCode.GEMINI_RESPONSE_PARSING_FAILED,
-                component="GeminiAIProvider",
-                context={"reason": "No JSON found in response"},
-            )
-
-        json_str = content[json_start:json_end]
-        data = json.loads(json_str)
-
-        return Decision(
-            decision_type="route_selection",
-            accepted_requests=data.get("accepted_requests", []),
-            rejected_requests=data.get("rejected_requests", []),
-            route=data.get("route", []),
-            estimated_duration=data.get("estimated_duration", 0),
-            confidence=data.get("confidence", 0.5),
-            reasoning=data.get("reasoning", "AI decision"),
-            fallback_used=False,
-        )
+        except Exception as e:
+             logger.error(f"Error parsing Gemini response: {e}")
+             raise
 
 
 class MockAIProvider(AIProvider):
@@ -191,11 +280,18 @@ class AIProviderFactory:
         if provider_type.lower() == "gemini":
             client = kwargs.get("client")
             if not client:
-                raise create_error(
-                    ErrorCode.GEMINI_API_KEY_MISSING,
-                    component="AIProviderFactory",
-                    context={"provider_type": provider_type},
-                )
+                import os
+                from google import genai
+                
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if not api_key:
+                    raise create_error(
+                        ErrorCode.GEMINI_API_KEY_MISSING,
+                        component="AIProviderFactory",
+                        context={"provider_type": provider_type},
+                    )
+                client = genai.Client(api_key=api_key)
+                
             return GeminiAIProvider(client, kwargs.get("daily_limit", 100))
 
         elif provider_type.lower() == "mock":

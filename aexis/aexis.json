@@ -7,9 +7,9 @@
       "password": "your_redis_password_here"
     },
     "ai": {
-      "provider": "mock",
+      "provider": "gemini",
       "gemini": {
-        "api_key": null
+        "api_key": "AIzaSyBsWmO1MBP1WMw1Kou3DGgNSAX8RU0nEwg"
       }
     },
     "pods": {

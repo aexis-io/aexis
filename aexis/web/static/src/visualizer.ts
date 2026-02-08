@@ -387,7 +387,7 @@ class NetworkVisualizer {
     if (!positionData?.pod_id) {
       return;
     }
-    // console.log("visualizer.handlePodPositionUpdate: received data:", positionData);
+    console.log("visualizer.handlePodPositionUpdate: received data:", positionData);
     const podId = positionData.pod_id;
     const location = positionData.location;
 

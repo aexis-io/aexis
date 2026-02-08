@@ -344,7 +344,7 @@ class Pod(EventProcessor):
 
             # Get route from routing provider (now properly async)
             route = await self.routing_provider.route(context)
-            logger.warning(f"Pod {self.pod_id} received route from provider: {route.stations if route else 'None'}")            
+            # logger.warning(f"Pod {self.pod_id} received route from provider: {route.stations if route else 'None'}")            
 
             # Convert route to decision format
             decision = Decision(
@@ -476,14 +476,6 @@ class Pod(EventProcessor):
 
         await self.publish_event(event)
 
-    # ========================================================================
-    # PHASE 1: Movement Simulation on Network Edges
-    # ========================================================================
-
-    # ========================================================================
-    # PHASE 1: Movement Simulation on Network Edges
-    # ========================================================================
-
     async def update(self, dt: float) -> bool:
         """Update pod physics for time step dt
 
@@ -514,16 +506,16 @@ class Pod(EventProcessor):
                 # Capture the node we just arrived at
                 arrived_node = self.current_segment.end_node
                 self._advance_segment()
-                logger.warning(
-                    f"Pod {self.pod_id} edge transition: arrived at node {arrived_node}, moving to next segment {self.current_segment.segment_id if self.current_segment else 'None'}")
-                # print(f"[{self.pod_id}]: --- Navigating to {self.current_segment.start_node}")
 
-                # Check for station arrival at intermediate nodes
-                # (The final node is handled by _handle_route_completion)
                 if not self.current_segment:
-                    logger.warning(
-                        f"[{self.pod_id}]: Checking station arrival at {arrived_node}")
-                    await self._handle_station_arrival(arrived_node)
+                    # logger.warning(
+                    #     f"[{self.pod_id}]: Checking station arrival at {arrived_node}")
+                    
+                    # Fix: Handle station arrival asynchronously to prevent blocking physics loop
+                    # If this was awaited, a slow decision (e.g. AI call) would freeze the entire simulation
+                    asyncio.create_task(self._handle_station_arrival(arrived_node))
+                    
+                    # If pod is now loading/unloading, stop movement for this tick
                     # If pod is now loading/unloading, stop movement for this tick
                     if self.status in [PodStatus.LOADING, PodStatus.UNLOADING]:
                         return True
@@ -549,7 +541,7 @@ class Pod(EventProcessor):
             # No more segments, we have arrived at final destination node of the last segment
             # Mark as finished so next loop iteration catches it
             self.current_segment = None
-        print(f"[{self.pod_id}]: Current segment after advance: {self.current_segment.segment_id if self.current_segment else 'None'}")
+        # print(f"[{self.pod_id}]: Current segment after advance: {self.current_segment.segment_id if self.current_segment else 'None'}")
 
     def _update_location_descriptor(self):
         """Update the public location descriptor based on internal physics state"""
@@ -591,7 +583,8 @@ class Pod(EventProcessor):
             )
 
             # Handle station arrival (pickup/delivery)
-            await self._handle_station_arrival(final_station)
+            # Use create_task to avoid blocking the physics loop
+            asyncio.create_task(self._handle_station_arrival(final_station))
 
         self.status = PodStatus.IDLE
         self.current_route = None
@@ -667,8 +660,8 @@ class Pod(EventProcessor):
 
                 if self.current_segment:
                     self.status = PodStatus.EN_ROUTE
-                    logger.info(
-                        f"Pod {self.pod_id} starting navigation to {target_station}")
+                    # logger.info(
+                    #     f"Pod {self.pod_id} starting navigation to {target_station}")
                     return True
                 return False
 
@@ -752,7 +745,7 @@ class PassengerPod(Pod):
         """Handle passenger pickup/delivery at station"""
         self.status = PodStatus.IDLE
         event = PodArrival(pod_id=self.pod_id, station_id=station_id)
-        logger.warning(f"Pod {self.pod_id} arrived at station {station_id}, checking for passengers")
+        # logger.warning(f"Pod {self.pod_id} arrived at station {station_id}, checking for passengers")
         await self.message_bus.publish_event(MessageBus.get_event_channel(event.event_type), event)
         await self._execute_pickup(station_id)
         await self._execute_delivery(station_id)
@@ -771,8 +764,8 @@ class PassengerPod(Pod):
         station = self._stations.get(station_id)
         if not station:
             # Fallback to legacy behavior if no station reference
-            logger.warning(
-                f"Pod {self.pod_id}: No station reference for {station_id}, using _available_requests")
+            # logger.warning(
+            #     f"Pod {self.pod_id}: No station reference for {station_id}, using _available_requests")
             pickups = [r for r in self._available_requests if r.get(
                 "origin") == station_id and r.get("type") == "passenger"]
         else:
@@ -832,8 +825,8 @@ class PassengerPod(Pod):
             await self.publish_event(event)
 
         self.status = PodStatus.EN_ROUTE
-        logger.warning(
-            f"Pod {self.pod_id} loaded {len(pickups)} passengers at {station_id}")
+        # logger.warning(
+        #     f"Pod {self.pod_id} loaded {len(pickups)} passengers at {station_id}")
 
 
 
@@ -884,8 +877,8 @@ class PassengerPod(Pod):
         if stations:
             self.pickup_route = [stations[0]]
             self.delivery_route = stations[1:] if len(stations) > 1 else []
-            logger.warning(
-                f"Pod {self.pod_id} pickup: {self.pickup_route}, delivery: {self.delivery_route}")
+            # logger.warning(
+            #     f"Pod {self.pod_id} pickup: {self.pickup_route}, delivery: {self.delivery_route}")
 
     async def _build_decision_context(self) -> DecisionContext:
         """Build decision context with passenger-specific constraints and available requests"""

@@ -133,7 +133,13 @@ class MessageBus:
             message = {"channel": channel, "message": event_dict}
 
             # Use custom encoder for datetime and Enum
+            import time
+            t0 = time.perf_counter()
             json_data = json.dumps(message, cls=AexisJSONEncoder)
+            t1 = time.perf_counter()
+            if t1 - t0 > 0.01: # 10ms
+                 logger.warning(f"Slow JSON serialization: {(t1-t0)*1000:.1f}ms for {event.event_type}")
+
             await self.redis_client.publish(channel, json_data)
             return True
 

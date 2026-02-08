@@ -20,6 +20,10 @@ class ErrorCode(Enum):
     REDIS_TIMEOUT = 1104
     REDIS_CHANNEL_NOT_FOUND = 1105
 
+    # AI Provider Errors (1150-1199) - New category for general AI provider issues
+    AI_PROVIDER_LIMIT_REACHED = 1150
+    AI_PROVIDER_TIMEOUT = 1151
+
     # Gemini API Errors (1200-1299)
     GEMINI_API_KEY_MISSING = 1200
     GEMINI_API_KEY_INVALID = 1201
