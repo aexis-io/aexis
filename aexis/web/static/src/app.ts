@@ -107,12 +107,8 @@ async function fetchInitialPodPositions(): Promise<void> {
         current_route: pod.current_route || null
       };
 
-      // Initialize pod in visualizer
-      // visualizer.updateData(positionData as any);
       visualizer.handlePodPositionUpdate(positionData as any);
     }
-
-    console.log(`Initialized ${Object.keys(podsData).length} pods from API`);
   } catch (error) {
     console.error('Error fetching initial pod positions:', error);
   }

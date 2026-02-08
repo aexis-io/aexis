@@ -34,9 +34,31 @@ class AexisConfig:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key with optional default.
-        config.get('stations.count', 10)
-        will parse the dict structure to get nested values.
+        Priority: 
+        1. Environment Variables (for core settings)
+        2. Config file / object attributes
+        3. Default value
         """
+        # Environment variable overrides for core settings
+        env_map = {
+            "pods.count": "POD_COUNT",
+            "stations.count": "STATION_COUNT",
+            "ai.provider": "AI_PROVIDER",
+            "pods.cargoPercentage": "CARGO_PERCENTAGE",
+            "redis.url": "REDIS_URL"
+        }
+        if key in env_map:
+            env_val = os.getenv(env_map[key])
+            if env_val is not None:
+                try:
+                    if isinstance(default, int):
+                        return int(env_val)
+                    if isinstance(default, float):
+                        return float(env_val)
+                    return env_val
+                except (ValueError, TypeError):
+                    pass
+
         keys = key.split(".")
         value = self
         for k in keys:
@@ -66,6 +88,7 @@ class SystemContext:
     _instance = None
     _initialized = False
     _lock = None
+    _lock = None
 
     def __init__(self):
         if not SystemContext._initialized:
@@ -75,26 +98,38 @@ class SystemContext:
             SystemContext._initialized = True
 
     @classmethod
-    async def initialize(cls, config_path: str = "aexis/aexis.json") -> 'SystemContext':
-        """Initialize SystemContext with configuration from aexis.json"""
+    def get_instance(cls) -> 'SystemContext':
+        """Get the SystemContext instance, initializing with defaults if necessary."""
         if cls._instance is None:
-            import threading
-            cls._lock = threading.Lock()
+            # Fallback to automatic initialization with default path
+            # Try to find aexis.json in common locations
+            config_path = "aexis.json"
+            if not os.path.exists(config_path):
+                config_path = "aexis/aexis.json"
 
-            with cls._lock:
-                if cls._instance is None:
-                    instance = cls()
-                    await instance._load_configuration(config_path)
-                    cls._instance = instance
+            cls.initialize_sync(config_path)
 
         return cls._instance
 
     @classmethod
-    def get_instance(cls) -> 'SystemContext':
-        """Get the SystemContext instance (must be initialized first)"""
+    async def initialize(cls, config_path: str = "aexis/aexis.json") -> 'SystemContext':
+        """Async wrapper for initialization (maintaining backward compatibility)"""
+        return cls.initialize_sync(config_path)
+
+    @classmethod
+    def initialize_sync(cls, config_path: str = "aexis/aexis.json") -> 'SystemContext':
+        """Synchronous initialization of SystemContext"""
         if cls._instance is None:
-            raise RuntimeError(
-                "SystemContext must be initialized before use. Call await SystemContext.initialize() first.")
+            if cls._lock is None:
+                import threading
+                cls._lock = threading.Lock()
+
+            with cls._lock:
+                if cls._instance is None:
+                    instance = cls()
+                    instance._load_configuration(config_path)
+                    cls._instance = instance
+
         return cls._instance
 
     @classmethod
@@ -103,8 +138,8 @@ class SystemContext:
         cls._instance = instance
         cls._initialized = True
 
-    async def _load_configuration(self, config_path: str):
-        """Load configuration from aexis.json"""
+    def _load_configuration(self, config_path: str):
+        """Load configuration from aexis.json (synchronous)"""
         self._config_path = config_path
 
         try:
@@ -128,8 +163,10 @@ class SystemContext:
             network_data = load_network_data(network_path)
             self._network_context = NetworkContext(network_data)
 
-            logger.info(
+            logger.warning(
                 f"SystemContext initialized with config: {config_path}")
+            for k, v in self._config.to_dict().items():
+                print(f"  {k}={v}")
 
         except FileNotFoundError:
             logger.warning(
@@ -215,7 +252,7 @@ class AexisSystem:
         }
 
         # Configuration from SystemContext instead of environment variables
-        self.pod_count = self.config.get('pods.count', 25)
+        self.pod_count = self.config.get('pods.count', 4)
         self.cargo_percentage = self.config.get(
             'pods.cargoPercentage', 50)  # 0-100
         self.station_count = self.config.get('stations.count', 8)
@@ -273,6 +310,29 @@ class AexisSystem:
             message = data.get("message", {})
             event_type = message.get("event_type", "")
 
+            event_data = message.get("data", {})
+            if not event_data:
+                event_data = message
+
+            seeded_request: dict | None = None
+            if event_type == "PassengerArrival":
+                seeded_request = {
+                    "type": "passenger",
+                    "passenger_id": event_data.get("passenger_id", ""),
+                    "origin": event_data.get("station_id"),
+                    "destination": event_data.get("destination", ""),
+                    "priority": event_data.get("priority"),
+                }
+            elif event_type == "CargoRequest":
+                seeded_request = {
+                    "type": "cargo",
+                    "request_id": event_data.get("request_id", ""),
+                    "origin": event_data.get("origin"),
+                    "destination": event_data.get("destination", ""),
+                    "weight": event_data.get("weight", 0.0),
+                    "priority": event_data.get("priority"),
+                }
+
             # React to arrivals by triggering idle pods
             if event_type in ["PassengerArrival", "CargoRequest"]:
                 station_id = message.get("station_id") or message.get("origin")
@@ -288,6 +348,15 @@ class AexisSystem:
                             logger.warning(f"Pod {pod.pod_id} is idle => {pod.status != PodStatus.IDLE}")
                             logger.warning(f"Prioritizing docked pod {pod.pod_id} at {station_id} for new {event_type}")
                             await self._populate_pod_requests(pod)
+                            if seeded_request:
+                                if seeded_request.get("type") == "passenger":
+                                    pid = seeded_request.get("passenger_id")
+                                    if pid and not any(r.get("passenger_id") == pid for r in pod._available_requests):
+                                        pod._available_requests.append(seeded_request)
+                                elif seeded_request.get("type") == "cargo":
+                                    rid = seeded_request.get("request_id")
+                                    if rid and not any(r.get("request_id") == rid for r in pod._available_requests):
+                                        pod._available_requests.append(seeded_request)
                             if len(pod._available_requests) > 0:
                                 await pod.make_decision()
                 
@@ -296,6 +365,15 @@ class AexisSystem:
                     # logger.warning(f"Checking pod {pod.pod_id} for event {event_type} at station {station_id}")
                     if pod.status.value == "idle" and not self._pod_is_at_station(pod, station_id):
                         await self._populate_pod_requests(pod)
+                        if seeded_request:
+                            if seeded_request.get("type") == "passenger":
+                                pid = seeded_request.get("passenger_id")
+                                if pid and not any(r.get("passenger_id") == pid for r in pod._available_requests):
+                                    pod._available_requests.append(seeded_request)
+                            elif seeded_request.get("type") == "cargo":
+                                rid = seeded_request.get("request_id")
+                                if rid and not any(r.get("request_id") == rid for r in pod._available_requests):
+                                    pod._available_requests.append(seeded_request)
                         if len(pod._available_requests) > 0:
                             await pod.make_decision()
 
@@ -498,7 +576,14 @@ class AexisSystem:
 
         # First pass: create all stations
         for node in nodes:
-            station_id = f"station_{node['id']}"
+            # Use 3-digit padding for numeric IDs for backward compatibility (e.g. station_001)
+            raw_id = node['id']
+            try:
+                station_num = int(raw_id)
+                station_id = f"station_{station_num:03d}"
+            except (ValueError, TypeError):
+                station_id = f"station_{raw_id}"
+                
             station = Station(self.message_bus, station_id)
             logger.debug(f"Loaded station: {station_id}")
 
@@ -514,7 +599,13 @@ class AexisSystem:
             if station:
                 connected = []
                 for adj in node.get("adj", []):
-                    connected_station_id = f"station_{adj['node_id']}"
+                    raw_adj_id = adj['node_id']
+                    try:
+                        adj_num = int(raw_adj_id)
+                        connected_station_id = f"station_{adj_num:03d}"
+                    except (ValueError, TypeError):
+                        connected_station_id = f"station_{raw_adj_id}"
+                        
                     if connected_station_id in self.stations:
                         connected.append(connected_station_id)
                 station.connected_stations = connected
@@ -540,6 +631,7 @@ class AexisSystem:
             )
             return
 
+        logging.warning(f"Spawning {self.pod_count} pods")
         for i in range(1, self.pod_count + 1):
             pod_id = f"pod_{i:03d}"
 
@@ -554,9 +646,9 @@ class AexisSystem:
             is_cargo = pod_index_percentage < self.cargo_percentage
 
             if is_cargo:
-                pod = CargoPod(self.message_bus, pod_id, routing_provider)
+                pod = CargoPod(self.message_bus, pod_id, routing_provider, stations=self.stations)
             else:
-                pod = PassengerPod(self.message_bus, pod_id, routing_provider)
+                pod = PassengerPod(self.message_bus, pod_id, routing_provider, stations=self.stations)
 
             # PHASE 1: Spawn pod at random network edge
             # spawn_pod_at_random_edge() returns (edge_id, coordinate, distance) where edge_id is always an edge

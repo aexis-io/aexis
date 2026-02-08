@@ -120,9 +120,9 @@ class MessageBus:
 
             event_dict = asdict(event)
             # Convert datetime to ISO string
-            if "timestamp" in event_dict:
-                event_dict["timestamp"] = event.timestamp.isoformat()
-
+            # if "timestamp" in event_dict:
+            #     event_dict["timestamp"] = event.timestamp.isoformat()
+            # print(f"Publishing event to {channel}: {event_dict}")
             message = {"channel": channel, "message": event_dict}
 
             await self.redis_client.publish(channel, json.dumps(message))
@@ -148,6 +148,8 @@ class MessageBus:
                 context={"event_type": event.event_type, "original_error": str(e)},
             )
             logger.error(error.message)
+            # import traceback
+            # traceback.print_exc()
             return False
 
         except Exception as e:
@@ -429,7 +431,8 @@ class LocalMessageBus(MessageBus):
         from dataclasses import asdict
         event_dict = asdict(event)
         if "timestamp" in event_dict:
-            event_dict["timestamp"] = event.timestamp.isoformat()
+            ts = event.timestamp
+            event_dict["timestamp"] = ts if isinstance(ts, str) else ts.isoformat()
 
         message = {"channel": channel, "message": event_dict}
         

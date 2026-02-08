@@ -92,9 +92,9 @@ async def test_pod_routing_and_delivery_lifecycle(aexis_system, local_message_bu
         coordinate=Coordinate(-250, -250)
     )
     
-    # Distant stations: Pickup at 17, Deliver to 11
-    origin_station_id = "station_17"
-    dest_station_id = "station_11"
+    # Distant stations: Pickup at 017, Deliver to 011
+    origin_station_id = "station_017"
+    dest_station_id = "station_011"
     passenger_id = "test_p_001"
     
     # 2. Inject Passenger at Station 17 via Message Bus

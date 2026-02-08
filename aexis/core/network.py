@@ -100,7 +100,13 @@ class NetworkContext:
             return
 
         for node in data["nodes"]:
-            station_id = f"station_{node['id']}"
+            # Use 3-digit padding for numeric IDs (e.g. station_001)
+            raw_id = node['id']
+            try:
+                station_num = int(raw_id)
+                station_id = f"station_{station_num:03d}"
+            except (ValueError, TypeError):
+                station_id = f"station_{raw_id}"
 
             # Position
             coord = node.get("coordinate", {"x": 0, "y": 0})
@@ -110,7 +116,12 @@ class NetworkContext:
 
             # Edges
             for adj in node.get("adj", []):
-                target_id = f"station_{adj['node_id']}"
+                raw_adj_id = adj['node_id']
+                try:
+                    adj_num = int(raw_adj_id)
+                    target_id = f"station_{adj_num:03d}"
+                except (ValueError, TypeError):
+                    target_id = f"station_{raw_adj_id}"
                 weight = adj.get("weight", 1.0)
                 # We'll calculate actual distance for weight if pos is valid, else use abstract weight
                 # For now just adding edge, weight update effectively happens if we recalc

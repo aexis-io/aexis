@@ -47,6 +47,7 @@ class Pod(EventProcessor):
         message_bus: MessageBus,
         pod_id: str,
         routing_provider: RoutingProvider | None = None,
+        stations: dict | None = None,
     ):
         """Initialize pod with dependency injection (DIP compliant)
 
@@ -55,12 +56,14 @@ class Pod(EventProcessor):
             pod_id: Pod identifier
             routing_provider: Routing provider for route decisions. Pod is agnostic to routing implementation.
                             If None, creates default provider with offline routing.
+            stations: Reference to system's station dict for live queue queries.
         """
         super().__init__(message_bus, pod_id)
         self.pod_id = pod_id
         self.status = PodStatus.IDLE
         self._available_requests = []
         self.decision: Optional[Decision] = None
+        self._stations = stations or {}  # Reference to system's station dict
 
         # PHASE 1: Position tracking on network
         self.location_descriptor = LocationDescriptor(
@@ -88,6 +91,29 @@ class Pod(EventProcessor):
             # Create default provider with offline routing
             self.routing_provider = RoutingProvider()
             self.routing_provider.add_router(OfflineRouter())
+
+    @property
+    def location(self) -> str:
+        """Backward compatible location property for testing and CLI"""
+        if self.location_descriptor.location_type == "station":
+            return self.location_descriptor.node_id
+        return self.location_descriptor.edge_id
+
+    @location.setter
+    def location(self, value: str):
+        """Backward compatible location setter for testing and CLI"""
+        if value is None:
+            return
+        if value.startswith("station_"):
+            self.location_descriptor = LocationDescriptor(
+                location_type="station",
+                node_id=value
+            )
+        else:
+            self.location_descriptor = LocationDescriptor(
+                location_type="edge",
+                edge_id=value
+            )
 
     def _get_pod_type(self) -> PodType:
         """Get the pod type - must be implemented by subclasses"""
@@ -298,6 +324,7 @@ class Pod(EventProcessor):
 
             # Get route from routing provider (now properly async)
             route = await self.routing_provider.route(context)
+            logger.warning(f"Pod {self.pod_id} received route from provider: {route.stations if route else 'None'}")            
 
             # Convert route to decision format
             decision = Decision(
@@ -399,7 +426,7 @@ class Pod(EventProcessor):
 
         event = PodStatusUpdate(
             pod_id=self.pod_id,
-            location=self.location_descriptor.node_id if self.location_descriptor.location_type == "station" else self.current_edge,
+            location=self.location_descriptor.node_id if self.location_descriptor.location_type == "station" else self.location_descriptor.edge_id,
             status=self.status.value,
             capacity_used=cap_used,
             capacity_total=cap_total,
@@ -527,10 +554,10 @@ class Pod(EventProcessor):
         await self._publish_status_update()
         logger.info(f"Pod {self.pod_id} arrived at destination")
 
-        # Immediately make a new decision to keep moving (Patrol/Next Task)
-        # Trigger if we are idle OR if we just finished a leg and need a new one
-        if self.status == PodStatus.IDLE or not self.current_route:
-            await self.make_decision()
+        # Remain idle after arrival. A new decision should be triggered by:
+        # - a reactive system event (e.g. PassengerArrival/CargoRequest)
+        # - an explicit command
+        # This prevents oscillation/patrol back-and-forth when no payloads are available.
 
     async def _handle_station_arrival(self, station_id: str):
         """Handle arrival at a station for pickup/delivery
@@ -662,8 +689,9 @@ class PassengerPod(Pod):
         message_bus: MessageBus,
         pod_id: str,
         routing_provider: RoutingProvider | None = None,
+        stations: dict | None = None,
     ):
-        super().__init__(message_bus, pod_id, routing_provider)
+        super().__init__(message_bus, pod_id, routing_provider, stations)
         self.capacity = 4  # Seats
         self.passengers = []  # List[dict] with passenger_id, destination
         self.pickup_route = []  # Stations to pick up from, in order
@@ -678,45 +706,56 @@ class PassengerPod(Pod):
         self.status = PodStatus.IDLE
         event = PodArrival(pod_id=self.pod_id, station_id=station_id)
         logger.warning(f"Pod {self.pod_id} arrived at station {station_id}, checking for passengers")
-        self.message_bus.publish_event(MessageBus.get_event_channel(event.event_type), event)
+        await self.message_bus.publish_event(MessageBus.get_event_channel(event.event_type), event)
         await self._execute_passenger_pickup(station_id)
         await self._execute_passenger_delivery(station_id)
 
     async def _execute_passenger_pickup(self, station_id: str):
-        """Execute passenger pickup at station"""
+        """Execute passenger pickup at station using live queue query and claim system"""
         remaining_capacity = self.capacity - len(self.passengers)
         if remaining_capacity <= 0:
             logger.debug(
                 f"Pod {self.pod_id} at capacity, skipping pickup at {station_id}")
             return
 
-        # Find passengers waiting at this station for us (from available_requests)
-        # This is populated by system._populate_pod_requests before decision
-        logger.warning(
-            f"Pod {self.pod_id}: execute_passenger_pickup at {station_id}, _available_requests count={len(self._available_requests)}")
-        pickups = [r for r in self._available_requests if r.get(
-            "origin") == station_id and r.get("type") == "passenger"]
+        # Query live station queue instead of stale _available_requests
+        station = self._stations.get(station_id)
+        if not station:
+            # Fallback to legacy behavior if no station reference
+            logger.warning(
+                f"Pod {self.pod_id}: No station reference for {station_id}, using _available_requests")
+            pickups = [r for r in self._available_requests if r.get(
+                "origin") == station_id and r.get("type") == "passenger"]
+        else:
+            # Get pending (unclaimed) passengers from station
+            pending = station.get_pending_passengers()
+            logger.info(
+                f"Pod {self.pod_id}: execute_passenger_pickup at {station_id}, {len(pending)} pending passengers")
+            
+            # Claim passengers atomically (prevents double-pickup)
+            pickups = []
+            for p in pending[:remaining_capacity]:
+                passenger_id = p.get("passenger_id")
+                if station.claim_passenger(passenger_id, self.pod_id):
+                    pickups.append(p)
 
         if not pickups:
             logger.debug(
-                f"Pod {self.pod_id} found no passengers at {station_id}")
+                f"Pod {self.pod_id} found no claimable passengers at {station_id}")
             return
 
         self.status = PodStatus.LOADING
         await self._publish_status_update()
 
-        # Pick up as many as capacity allows
-        to_pickup = pickups[:remaining_capacity]
-
         # Simulate loading time: 5 seconds per passenger
-        loading_time = len(to_pickup) * 5
+        loading_time = len(pickups) * 5
         await asyncio.sleep(loading_time)
 
         from .model import PassengerPickedUp
-        for req in to_pickup:
+        for p in pickups:
             passenger = {
-                "passenger_id": req.get("passenger_id"),
-                "destination": req.get("destination"),
+                "passenger_id": p.get("passenger_id"),
+                "destination": p.get("destination"),
                 "pickup_time": datetime.now(UTC)
             }
             self.passengers.append(passenger)
@@ -732,7 +771,7 @@ class PassengerPod(Pod):
 
         self.status = PodStatus.EN_ROUTE
         logger.info(
-            f"Pod {self.pod_id} loaded {len(to_pickup)} passengers at {station_id}")
+            f"Pod {self.pod_id} loaded {len(pickups)} passengers at {station_id}")
 
     async def _execute_passenger_delivery(self, station_id: str):
         """Execute passenger delivery at station"""
@@ -849,8 +888,9 @@ class CargoPod(Pod):
         message_bus: MessageBus,
         pod_id: str,
         routing_provider: RoutingProvider | None = None,
+        stations: dict | None = None,
     ):
-        super().__init__(message_bus, pod_id, routing_provider)
+        super().__init__(message_bus, pod_id, routing_provider, stations)
         self.weight_capacity = 500.0  # kg
         self.current_weight = 0.0
         self.cargo = []  # List[dict] with request_id, destination, weight
@@ -872,22 +912,87 @@ class CargoPod(Pod):
         await self._execute_cargo_delivery(station_id)
 
     async def _execute_cargo_pickup(self, station_id: str):
-        """Execute cargo pickup at station"""
+        """Execute cargo pickup at station using live queue query and claim system"""
         remaining_capacity = self.weight_capacity - self.current_weight
         if remaining_capacity <= 0:
             logger.debug(
                 f"Pod {self.pod_id} at weight capacity, skipping pickup at {station_id}")
             return
 
+        # Query live station queue instead of stale _available_requests
+        station = self._stations.get(station_id)
+        if not station:
+            # Fallback to legacy behavior if no station reference
+            logger.warning(
+                f"Pod {self.pod_id}: No station reference for {station_id}, using _available_requests")
+            pending_cargo = [
+                r
+                for r in self._available_requests
+                if r.get("origin") == station_id and r.get("type") == "cargo"
+            ]
+        else:
+            # Get pending (unclaimed) cargo from station
+            pending_cargo = station.get_pending_cargo()
+            logger.info(
+                f"Pod {self.pod_id}: execute_cargo_pickup at {station_id}, {len(pending_cargo)} pending cargo items")
+
+        if not pending_cargo:
+            logger.debug(f"Pod {self.pod_id} found no cargo at {station_id}")
+            return
+
         self.status = PodStatus.LOADING
         await self._publish_status_update()
 
+        loaded_count = 0
+        loaded_weight = 0.0
+
+        from .model import CargoLoaded
+
+        for req in pending_cargo:
+            req_weight = float(req.get("weight", 0.0) or 0.0)
+            if req_weight <= 0:
+                continue
+            if self.current_weight + loaded_weight + req_weight > self.weight_capacity:
+                continue
+
+            # Claim cargo atomically (prevents double-loading)
+            request_id = req.get("request_id", "")
+            if station and not station.claim_cargo(request_id, self.pod_id):
+                continue  # Skip if claim failed (already claimed by another pod)
+
+            cargo_item = {
+                "request_id": request_id,
+                "destination": req.get("destination", ""),
+                "weight": req_weight,
+                "pickup_time": datetime.now(UTC),
+            }
+            self.cargo.append(cargo_item)
+            loaded_count += 1
+            loaded_weight += req_weight
+
+            event = CargoLoaded(
+                request_id=cargo_item["request_id"],
+                pod_id=self.pod_id,
+                station_id=station_id,
+                load_time=cargo_item["pickup_time"],
+            )
+            await self.publish_event(event)
+
+        if loaded_count == 0:
+            self.status = PodStatus.IDLE
+            await self._publish_status_update()
+            return
+
+        self.current_weight += loaded_weight
+
         # Simulate loading time: 10 seconds per 100kg
-        loading_time = max(10, (len(self.cargo) * 10))
+        loading_time = max(1.0, (loaded_weight / 100.0) * 10.0)
         await asyncio.sleep(loading_time)
 
         self.status = PodStatus.EN_ROUTE
-        logger.info(f"Pod {self.pod_id} loaded cargo at {station_id}")
+        logger.info(
+            f"Pod {self.pod_id} loaded {loaded_count} cargo items ({loaded_weight:.1f}kg) at {station_id}"
+        )
 
     async def _execute_cargo_delivery(self, station_id: str):
         """Execute cargo delivery at station"""

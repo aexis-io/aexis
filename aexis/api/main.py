@@ -64,9 +64,6 @@ async def main():
         # Run server and system concurrently
         # We need to manage the shutdown sequence carefully
 
-        # logger.warning("Triggering pod decisions")
-        # for pod in system.pods.values():
-        #     await pod._execute_decision(pod.decision)
         try:
             await server.serve()
         finally:

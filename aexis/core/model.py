@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 from uuid import uuid4
@@ -32,7 +32,7 @@ class Priority(Enum):
 class Event:
     event_id: str = field(default_factory=lambda: str(uuid4()))
     event_type: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
     source: str = ""
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -55,7 +55,7 @@ class PassengerPickedUp(Event):
     passenger_id: str = ""
     pod_id: str = ""
     station_id: str = ""
-    pickup_time: datetime = field(default_factory=datetime.utcnow)
+    pickup_time: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
 
 
 @dataclass
@@ -64,7 +64,7 @@ class PassengerDelivered(Event):
     passenger_id: str = ""
     pod_id: str = ""
     station_id: str = ""
-    delivery_time: datetime = field(default_factory=datetime.utcnow)
+    delivery_time: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
     total_travel_time: int = 0  # seconds
     satisfaction_score: float = 0.0
 
@@ -89,7 +89,7 @@ class CargoLoaded(Event):
     request_id: str = ""
     pod_id: str = ""
     station_id: str = ""
-    load_time: datetime = field(default_factory=datetime.utcnow)
+    load_time: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
 
 
 @dataclass
@@ -98,7 +98,7 @@ class CargoDelivered(Event):
     request_id: str = ""
     pod_id: str = ""
     station_id: str = ""
-    delivery_time: datetime = field(default_factory=datetime.utcnow)
+    delivery_time: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
     condition: str = "good"
     on_time: bool = True
 
@@ -145,7 +145,7 @@ class CongestionAlert(Event):
 class SystemSnapshot(Event):
     event_type: str = "SystemSnapshot"
     snapshot_id: str = field(
-        default_factory=lambda: f"snap_{datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')}"
+        default_factory=lambda: f"snap_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     )
     system_state: dict[str, Any] = field(default_factory=dict)
 
@@ -328,7 +328,7 @@ class PodPositionUpdate(Event):
     pod_id: str = ""
     location: LocationDescriptor = field(
         default_factory=lambda: LocationDescriptor("station", "unknown"))
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
     status: str = "idle"
     speed: float = 0.0
     current_route: Optional[list[str]] = None
@@ -339,4 +339,4 @@ class PodArrival(Event):
     event_type: str = "PodArrival"
     pod_id: str = ""
     station_id: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))

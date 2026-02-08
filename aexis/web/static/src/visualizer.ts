@@ -1,4 +1,3 @@
-
 interface Vector2 {
   x: number;
   y: number;
@@ -20,7 +19,7 @@ interface Node {
 interface PathSegment {
   start: Vector2;
   end: Vector2;
-  length: number;  // Precomputed Euclidean distance
+  length: number; // Precomputed Euclidean distance
   tangent: Vector2; // Normalized direction vector (end - start)
 }
 
@@ -50,7 +49,7 @@ interface SpineSample {
 interface Pod {
   id: string;
   gfx: PIXI.Graphics;
-  podType: 'cargo' | 'passenger';
+  podType: "cargo" | "passenger";
   spineId: string;
   distanceAlongPath: number;
   speed: number;
@@ -103,14 +102,13 @@ interface NetworkData {
 interface StationPayload {
   id: string;
   stationId: string;
-  type: 'passenger' | 'cargo';
+  type: "passenger" | "cargo";
   gfx: PIXI.Graphics;
   createdAt: number;
 }
 
-
 interface PodLocation {
-  location_type: 'edge' | 'node' | 'station';
+  location_type: "edge" | "node" | "station";
   node_id: string;
   edge_id: string;
   coordinate: {
@@ -121,16 +119,16 @@ interface PodLocation {
 }
 
 interface PodPositionUpdate {
-  current_route: null | string;  // or Route type
+  current_route: null | string; // or Route type
   data: Record<string, unknown>;
   event_id: string;
-  event_type: 'PodPositionUpdate';
+  event_type: "PodPositionUpdate";
   location: PodLocation;
   pod_id: string;
   source: string;
-  status: 'en_route' | 'idle' | 'arrived' | 'error';
+  status: "en_route" | "idle" | "arrived" | "error";
   speed: number; // Added: server-side physics velocity
-  timestamp: string;  // ISO string
+  timestamp: string; // ISO string
 }
 
 class NetworkVisualizer {
@@ -153,6 +151,14 @@ class NetworkVisualizer {
   hoveredLabel: PIXI.Text | null = null;
   hoveredNodeId: string | null = null;
 
+  stationWaitingCounts: Map<string, { passenger: number; cargo: number }> =
+    new Map();
+  stationDeliveredCounts: Map<
+    string,
+    { passenger: number; cargo: number; expiresAtMs: number | null }
+  > = new Map();
+  stationWaitingText: Map<string, PIXI.Text> = new Map();
+  stationDeliveredText: Map<string, PIXI.Text> = new Map();
 
   constructor(canvasId: string) {
     this.canvas = document.getElementById(canvasId);
@@ -174,15 +180,15 @@ class NetworkVisualizer {
         width: 1.5,
         glowWidths: [40, 20, 10, 5],
         glowAlphas: [0.05, 0.1, 0.2, 0.4],
-        glowColor: 0x00fbff
+        glowColor: 0x00fbff,
       },
       palette: [
         0x00fbff, // Cyan
         0xff8800, // Orange
         0xffff00, // Yellow
         0xff0000, // Red
-        0xff00ff  // Purple
-      ]
+        0xff00ff, // Purple
+      ],
     };
 
     // State
@@ -209,7 +215,7 @@ class NetworkVisualizer {
       resizeTo: window,
       antialias: true,
       backgroundColor: this.config.bgColor,
-      resolution: window.devicePixelRatio || 1
+      resolution: window.devicePixelRatio || 1,
     });
 
     // Setup Containers
@@ -249,8 +255,7 @@ class NetworkVisualizer {
     this.labelLayer.interactiveChildren = false;
     this.labelLayer.hitArea = new PIXI.Rectangle(0, 0, 10000, 10000); // Full canvas
 
-
-    this.labelLayer.on('pointermove', (event: PIXI.FederatedPointerEvent) => {
+    this.labelLayer.on("pointermove", (event: PIXI.FederatedPointerEvent) => {
       this.handlePodHover(event);
     });
 
@@ -258,7 +263,7 @@ class NetworkVisualizer {
     this.app.ticker.add((delta: number) => this.animate(delta));
 
     // Handle Resize
-    window.addEventListener('resize', () => {
+    window.addEventListener("resize", () => {
       if (this.app) this.app.resize();
       this.drawGrid();
       this.drawSpines();
@@ -267,10 +272,10 @@ class NetworkVisualizer {
 
   setupInteraction(): void {
     if (!this.app) return;
-    this.app.stage.eventMode = 'static';
+    this.app.stage.eventMode = "static";
     this.app.stage.hitArea = this.app.screen;
 
-    this.app.stage.on('wheel', (e: WheelEvent) => {
+    this.app.stage.on("wheel", (e: WheelEvent) => {
       e.preventDefault();
       const zoomFactor = 1.1;
       const direction = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
@@ -288,12 +293,12 @@ class NetworkVisualizer {
     let isPanDragging = false;
     let lastMouse = { x: 0, y: 0 };
 
-    this.app.stage.on('pointerdown', (e: PIXI.FederatedPointerEvent) => {
+    this.app.stage.on("pointerdown", (e: PIXI.FederatedPointerEvent) => {
       isPanDragging = true;
       lastMouse = { x: e.global.x, y: e.global.y };
     });
-    this.app.stage.on('pointerup', () => isPanDragging = false);
-    this.app.stage.on('pointermove', (e: PIXI.FederatedPointerEvent) => {
+    this.app.stage.on("pointerup", () => (isPanDragging = false));
+    this.app.stage.on("pointermove", (e: PIXI.FederatedPointerEvent) => {
       if (isPanDragging) {
         this.pan.x += e.global.x - lastMouse.x;
         this.pan.y += e.global.y - lastMouse.y;
@@ -321,8 +326,17 @@ class NetworkVisualizer {
   toWorld(screenX: number, screenY: number): Vector2 {
     return {
       x: (screenX - this.pan.x) / this.zoom,
-      y: (screenY - this.pan.y) / this.zoom
+      y: (screenY - this.pan.y) / this.zoom,
     };
+  }
+
+  private formatStationId(id: string | number): string {
+    const numericId = typeof id === "string" ? parseInt(id) : id;
+    if (!isNaN(numericId)) {
+      return `station_${numericId.toString().padStart(3, "0")}`;
+    }
+    const idStr = id.toString();
+    return idStr.startsWith("station_") ? idStr : `station_${idStr}`;
   }
 
   drawGrid(): void {
@@ -366,12 +380,10 @@ class NetworkVisualizer {
     }
   }
 
-
   /**
    * Handle real-time pod position updates from WebSocket
    */
   handlePodPositionUpdate(positionData: any): void {
-    console.log("Received PodPositionUpdate: ", positionData);
     if (!positionData?.pod_id) {
       return;
     }
@@ -380,7 +392,10 @@ class NetworkVisualizer {
     const location = positionData.location;
 
     // Extract pod type - check positionData first, then fallback to existing pod data
-    const podType = (positionData.pod_type || (positionData as any).data?.pod_type || this.pods.get(podId)?.podType || 'passenger') as 'cargo' | 'passenger';
+    const podType = (positionData.pod_type ||
+      (positionData as any).data?.pod_type ||
+      this.pods.get(podId)?.podType ||
+      "passenger") as "cargo" | "passenger";
 
     // console.log(`visualizer.handlePodPositionUpdate: pod ${podId} at location `, location)
     let pod = this.pods.get(podId);
@@ -391,7 +406,7 @@ class NetworkVisualizer {
       pod = this.createPod(podId, {
         pod_type: podType,
         spine_id: location?.edge_id || "",
-        distance: location?.distance_on_edge || 0
+        distance: location?.distance_on_edge || 0,
       });
       this.pods.set(podId, pod);
     }
@@ -405,12 +420,13 @@ class NetworkVisualizer {
     // Update position data
     if (location) {
       // Correctly track spineId and station status
-      const isAtStation = location.location_type === 'station' || !!location.node_id;
+      const isAtStation =
+        location.location_type === "station" || !!location.node_id;
 
       pod.data = {
         ...pod.data,
         location: location,
-        pod_type: podType
+        pod_type: podType,
       };
 
       if (isAtStation) {
@@ -428,12 +444,12 @@ class NetworkVisualizer {
         }
 
         // Update distance along path
-        if (typeof location.distance_on_edge === 'number') {
+        if (typeof location.distance_on_edge === "number") {
           pod.targetDistance = location.distance_on_edge;
           pod.velocity = positionData.speed || 0;
           pod.lastUpdate = Date.now();
 
-          // Snap if jump is too large (e.g. teleporting across map or segment change)
+          // Snap if jump is too large (e.g. initial load), snap
           const distDiff = Math.abs(pod.targetDistance - pod.distanceAlongPath);
           if (distDiff > 100 || pod.spineId !== location.edge_id) {
             pod.distanceAlongPath = pod.targetDistance;
@@ -445,7 +461,7 @@ class NetworkVisualizer {
 
   updatePodColor(pod: Pod): void {
     // Update pod graphics color based on pod type (cargo=orange, passenger=teal)
-    const podColor = pod.podType === 'cargo' ? 0xff8800 : 0x00fbff;
+    const podColor = pod.podType === "cargo" ? 0xff8800 : 0x00fbff; // Orange for cargo, teal for passenger
 
     // Redraw pod with new color
     pod.gfx.clear();
@@ -467,69 +483,149 @@ class NetworkVisualizer {
   handleEvent(channel: string, eventData: any): void {
     const eventType = eventData.event_type;
 
-    if (eventType.includes('PodPositionUpdate')) {
+    if (eventType.includes("PodPositionUpdate")) {
       this.handlePodPositionUpdate(eventData as PodPositionUpdate);
     }
 
-    // Payload arrival at station
-    if (eventType.includes('PassengerArrival')) {
-      this.addStationPayload(eventData.station_id || eventData.origin, 'passenger', eventData.passenger_id || eventData.event_id);
-    } else if (eventType.includes('CargoRequest')) {
-      console.log('Adding new arriving cargo')
-      this.addStationPayload(eventData.station_id || eventData.origin, 'cargo', eventData.cargo_id || eventData.event_id);
+    // Waiting payloads at station (count-based)
+    if (eventType.includes("PassengerArrival")) {
+      this.incrementWaiting(eventData.station_id, "passenger", 1);
+    } else if (eventType.includes("CargoRequest")) {
+      this.incrementWaiting(eventData.origin, "cargo", 1);
     }
 
-    // Payload loaded onto pod (departure)
-    if (eventType.includes('passenger') && eventType.includes('loaded')) {
-      this.removeStationPayload(eventData.passenger_id || eventData.event_id);
-    } else if (eventType.includes('cargo') && eventType.includes('loaded')) {
-      this.removeStationPayload(eventData.cargo_id || eventData.event_id);
+    // Pickup/removal from origin station (count-based)
+    if (eventType.includes("PassengerPickedUp")) {
+      this.incrementWaiting(eventData.station_id, "passenger", -1);
+    } else if (eventType.includes("CargoLoaded")) {
+      this.incrementWaiting(eventData.station_id, "cargo", -1);
+    }
+
+    // Delivery flash at destination station (count-based, expires)
+    if (eventType.includes("PassengerDelivered")) {
+      this.incrementDelivered(eventData.station_id, "passenger", 1);
+    } else if (eventType.includes("CargoDelivered")) {
+      this.incrementDelivered(eventData.station_id, "cargo", 1);
     }
   }
 
-  addStationPayload(stationId: string, type: 'passenger' | 'cargo', payloadId: string): void {
-    // Extract node ID from station ID (station_1 -> 1)
-    const nodeId = stationId.replace('station_', '');
-    const node = this.nodes.get(nodeId);
-    if (!node || !this.indicatorLayer) return;
+  private incrementWaiting(
+    stationId: string | undefined,
+    type: "passenger" | "cargo",
+    delta: number,
+  ): void {
+    if (!stationId) return;
+    const formattedId = this.formatStationId(stationId);
+    const current = this.stationWaitingCounts.get(formattedId) || {
+      passenger: 0,
+      cargo: 0,
+    };
+    current[type] = Math.max(0, (current[type] || 0) + delta);
+    this.stationWaitingCounts.set(formattedId, current);
+    // console.log(
+    //   "visualizer.incrementWaiting: station waiting counts:",
+    //   this.stationWaitingCounts,
+    // );
+    this.renderWaitingIndicator(formattedId);
+  }
 
-    // Create visual indicator
-    const gfx = new PIXI.Graphics();
-    const color = type === 'passenger' ? 0xffff00 : 0xaa00ff; // Yellow for passenger, purple for cargo
+  private incrementDelivered(
+    stationId: string | undefined,
+    type: "passenger" | "cargo",
+    delta: number,
+  ): void {
+    if (!stationId) return;
+    const now = Date.now();
+    const formattedId = this.formatStationId(stationId);
+    const current = this.stationDeliveredCounts.get(formattedId) || {
+      passenger: 0,
+      cargo: 0,
+      expiresAtMs: null as number | null,
+    };
+    current[type] = Math.max(0, (current[type] || 0) + delta);
+    current.expiresAtMs = now + 2000;
+    this.stationDeliveredCounts.set(formattedId, current);
+    this.renderDeliveredIndicator(formattedId);
+  }
 
-    // Small circle offset from station center
+  private renderWaitingIndicator(stationId: string): void {
+    if (!this.indicatorLayer) return;
+    const formattedId = this.formatStationId(stationId);
+    const counts = this.stationWaitingCounts.get(formattedId);
+    const total = (counts?.passenger || 0) + (counts?.cargo || 0);
+    const node = this.nodes.get(formattedId);
+    if (!node) return;
 
-    const existingCount = Array.from(this.stationPayloads.values()).filter(p => p.stationId === stationId).length;
-    const angle = (existingCount * 0.5) + Math.random() * 0.3;
-    const radius = 20 + existingCount * 3;
-    const offsetX = Math.cos(angle) * radius;
-    const offsetY = Math.sin(angle) * radius;
+    const existing = this.stationWaitingText.get(formattedId);
+    if (total <= 0) {
+      if (existing) {
+        this.indicatorLayer.removeChild(existing);
+        existing.destroy();
+        this.stationWaitingText.delete(stationId);
+      }
+      return;
+    }
 
-    gfx.beginFill(color, 0.8);
-    gfx.drawCircle(0, 0, 5);
-    gfx.endFill();
+    const passengerCount = counts?.passenger || 0;
+    const cargoCount = counts?.cargo || 0;
+    const label = `P:${passengerCount} C:${cargoCount}`;
 
-    gfx.beginFill(0xffffff, 0.5);
-    gfx.drawCircle(0, 0, 2);
-    gfx.endFill();
-
-    gfx.position.set(node.x + offsetX, node.y + offsetY);
-    this.indicatorLayer.addChild(gfx);
-
-    this.stationPayloads.set(payloadId, {
-      id: payloadId,
-      stationId,
-      type,
-      gfx,
-      createdAt: Date.now()
+    const style = new PIXI.TextStyle({
+      fontFamily: "monospace",
+      fontSize: 12,
+      fill: 0xffffff,
+      stroke: 0x000000,
+      strokeThickness: 2,
     });
+
+    const txt = existing || new PIXI.Text(label, style);
+    txt.text = label;
+    txt.x = node.x + 10;
+    txt.y = node.y + 10;
+    if (!existing) {
+      this.stationWaitingText.set(formattedId, txt);
+      this.indicatorLayer.addChild(txt);
+    }
   }
 
-  removeStationPayload(payloadId: string): void {
-    const payload = this.stationPayloads.get(payloadId);
-    if (payload) {
-      payload.gfx.destroy();
-      this.stationPayloads.delete(payloadId);
+  private renderDeliveredIndicator(stationId: string): void {
+    if (!this.indicatorLayer) return;
+    const formattedId = this.formatStationId(stationId);
+    const counts = this.stationDeliveredCounts.get(formattedId);
+    const total = (counts?.passenger || 0) + (counts?.cargo || 0);
+    const node = this.nodes.get(formattedId);
+    if (!node) return;
+
+    const existing = this.stationDeliveredText.get(formattedId);
+    if (total <= 0) {
+      if (existing) {
+        this.indicatorLayer.removeChild(existing);
+        existing.destroy();
+        this.stationDeliveredText.delete(stationId);
+      }
+      return;
+    }
+
+    const passengerCount = counts?.passenger || 0;
+    const cargoCount = counts?.cargo || 0;
+    const label = `DEL P:${passengerCount} C:${cargoCount}`;
+
+    const style = new PIXI.TextStyle({
+      fontFamily: "monospace",
+      fontSize: 12,
+      fill: 0x00ff66,
+      stroke: 0x000000,
+      strokeThickness: 2,
+    });
+
+    const txt = existing || new PIXI.Text(label, style);
+    txt.text = label;
+    txt.x = node.x + 10;
+    txt.y = node.y - 24;
+    txt.alpha = 1.0;
+    if (!existing) {
+      this.stationDeliveredText.set(formattedId, txt);
+      this.indicatorLayer.addChild(txt);
     }
   }
 
@@ -561,7 +657,7 @@ class NetworkVisualizer {
 
       // Update target for interpolation
       // Assuming backend sends 'distance' property
-      if (typeof data.distance === 'number') {
+      if (typeof data.distance === "number") {
         // Simple interpolation setup:
         // We know where it is NOW (visual), and where server says it is (target).
         pod.targetDistance = data.distance;
@@ -575,7 +671,7 @@ class NetworkVisualizer {
     }
 
     // 2. Remove stale pods
-    unseenIds.forEach(id => {
+    unseenIds.forEach((id) => {
       const pod = this.pods.get(id);
       if (pod) {
         pod.gfx.destroy(); // Remove from scene
@@ -585,8 +681,9 @@ class NetworkVisualizer {
   }
 
   createPod(id: string, data: any): Pod {
-    const podType: 'cargo' | 'passenger' = data.pod_type === 'cargo' ? 'cargo' : 'passenger';
-    const podColor = podType === 'cargo' ? 0xff8800 : 0x00fbff; // Orange for cargo, teal for passenger
+    const podType: "cargo" | "passenger" =
+      data.pod_type === "cargo" ? "cargo" : "passenger";
+    const podColor = podType === "cargo" ? 0xff8800 : 0x00fbff; // Orange for cargo, teal for passenger
 
     const gfx = new PIXI.Graphics();
 
@@ -612,7 +709,7 @@ class NetworkVisualizer {
       speed: 0, // Speed is derived from server updates now
       velocity: 0, // Current movement velocity for extrapolation
       lastUpdate: Date.now(),
-      data: data
+      data: data,
     };
   }
 
@@ -621,7 +718,7 @@ class NetworkVisualizer {
     const dt = delta / 60;
     const lerpFactor = 0.15; // Increased slightly for snappier catch-up
 
-    this.pods.forEach(pod => {
+    this.pods.forEach((pod) => {
       // If the pod is at a station (no spineId), we don't interpolate distance,
       // its position was already set in handlePodPositionUpdate.
       if (!pod.spineId) return;
@@ -644,7 +741,10 @@ class NetworkVisualizer {
       }
 
       // Bind to spine length
-      pod.distanceAlongPath = Math.max(0, Math.min(pod.distanceAlongPath, spine.totalLength));
+      pod.distanceAlongPath = Math.max(
+        0,
+        Math.min(pod.distanceAlongPath, spine.totalLength),
+      );
 
       // authoritative sample & render
       const sample = this.sampleSpine(spine, pod.distanceAlongPath);
@@ -653,6 +753,35 @@ class NetworkVisualizer {
       // Orient towards tangent
       pod.gfx.rotation = Math.atan2(sample.tangent.y, sample.tangent.x);
     });
+
+    // Delivered indicator expiry & fade
+    const now = Date.now();
+    for (const [
+      stationId,
+      delivered,
+    ] of this.stationDeliveredCounts.entries()) {
+      if (!delivered.expiresAtMs) continue;
+      const remaining = delivered.expiresAtMs - now;
+      const txt = this.stationDeliveredText.get(stationId);
+
+      if (remaining <= 0) {
+        this.stationDeliveredCounts.set(stationId, {
+          passenger: 0,
+          cargo: 0,
+          expiresAtMs: null,
+        });
+        if (txt && this.indicatorLayer) {
+          this.indicatorLayer.removeChild(txt);
+          txt.destroy();
+          this.stationDeliveredText.delete(stationId);
+        }
+        continue;
+      }
+
+      if (txt) {
+        txt.alpha = Math.max(0.0, Math.min(1.0, remaining / 2000));
+      }
+    }
   }
 
   /**
@@ -662,12 +791,12 @@ class NetworkVisualizer {
 
   async loadLayout(): Promise<void> {
     try {
-      const response = await fetch('/api/network');
-      const data = await response.json() as NetworkData;
+      const response = await fetch("/api/network");
+      const data = (await response.json()) as NetworkData;
       // Apply layout scale to coordinates if needed, or assume they are pre-scaled
       // For this network.json, coordinates look like -700, 800, so likely no scale needed or scale = 1
       if (this.config.layoutScale !== 1) {
-        data.nodes.forEach(n => {
+        data.nodes.forEach((n) => {
           n.coordinate.x *= this.config.layoutScale;
           n.coordinate.y *= this.config.layoutScale;
         });
@@ -675,7 +804,7 @@ class NetworkVisualizer {
 
       this.generateLayout(data);
     } catch (e) {
-      console.error('Failed to load network.json', e);
+      console.error("Failed to load network.json", e);
     }
   }
 
@@ -687,11 +816,12 @@ class NetworkVisualizer {
 
     // 1. Create Nodes
     data.nodes.forEach((n) => {
-      this.nodes.set(n.id, {
-        id: n.id,
+      const paddedId = this.formatStationId(n.id);
+      this.nodes.set(paddedId, {
+        id: paddedId,
         x: n.coordinate.x,
         y: n.coordinate.y,
-        connectedSpines: []
+        connectedSpines: [],
       });
     });
 
@@ -701,33 +831,39 @@ class NetworkVisualizer {
     data.nodes.forEach((sourceNode) => {
       if (!sourceNode.adj) return;
 
-      const startNode = this.nodes.get(sourceNode.id);
+      const paddedSourceId = this.formatStationId(sourceNode.id);
+      const startNode = this.nodes.get(paddedSourceId);
       if (!startNode) return;
 
       sourceNode.adj.forEach((adj) => {
-        const targetId = adj.node_id;
-        const endNode = this.nodes.get(targetId);
+        const paddedTargetId = this.formatStationId(adj.node_id);
+        const endNode = this.nodes.get(paddedTargetId);
 
         if (!endNode) return;
 
         // Simple deduplication: "minId-maxId"
-        // For routing, we treat this edge as bidirectional conceptually, 
+        // For routing, we treat this edge as bidirectional conceptually,
         // but our simulation moves along one vector.
-        // To allow bidirectional travel, we might need TWO spines (A->B and B->A) 
+        // To allow bidirectional travel, we might need TWO spines (A->B and B->A)
         // OR intelligent traversal that handles negative speed.
         // Simplest for now: Create two directed spines for every link so pods can flow both ways easily.
         // Wait, typically edges are undirected. Let's stick to unique edges and handle "reverse" traversal later.
-        // Actually, for "pickNextRoute" to work easily with "distanceAlongPath", 
+        // Actually, for "pickNextRoute" to work easily with "distanceAlongPath",
         // it's easiest if spines are directed paths A->B.
         // If the graph is undirected, we should probably generate TWO directed spines per adjacency
         // so we don't have to handle "moving backwards" logic right now.
 
         // Let's create directed spines for EVERY adjacency.
         // edgeId = "source->target"
-        const edgeId = `station_${sourceNode.id}->station_${targetId}`;
+        const edgeId = `${paddedSourceId}->${paddedTargetId}`;
 
         // Generate geometry (Octilinear path between nodes)
-        const pathPoints = this.getOctilinearPath(startNode.x, startNode.y, endNode.x, endNode.y);
+        const pathPoints = this.getOctilinearPath(
+          startNode.x,
+          startNode.y,
+          endNode.x,
+          endNode.y,
+        );
 
         const spine = this.createSpine(pathPoints, edgeId, startNode, endNode);
         // console.log("Setting spine: ", edgeId, spine);
@@ -750,10 +886,13 @@ class NetworkVisualizer {
     this.drawNodes();
   }
 
-  setPaused(p: boolean): void { }
+  setPaused(p: boolean): void {}
   resetView(): void {
     this.zoom = 1.0;
-    this.pan = { x: this.app?.screen.width || 0 / 2, y: this.app?.screen.height || 0 / 2 };
+    this.pan = {
+      x: this.app?.screen.width || 0 / 2,
+      y: this.app?.screen.height || 0 / 2,
+    };
     this.updateViewport();
   }
 
@@ -761,7 +900,12 @@ class NetworkVisualizer {
    * Factory to create a PathSpine from an ordered list of points.
    * Precomputes all segment lengths and tangents for O(1) sampling lookup.
    */
-  createSpine(points: Vector2[], id: string, startNode: Node, endNode: Node): PathSpine {
+  createSpine(
+    points: Vector2[],
+    id: string,
+    startNode: Node,
+    endNode: Node,
+  ): PathSpine {
     const segments: PathSegment[] = [];
     let totalLength = 0;
 
@@ -777,13 +921,19 @@ class NetworkVisualizer {
           start,
           end,
           length,
-          tangent: { x: dx / length, y: dy / length }
+          tangent: { x: dx / length, y: dy / length },
         });
         totalLength += length;
       }
     }
 
-    return { id, startNodeId: startNode.id, endNodeId: endNode.id, segments, totalLength };
+    return {
+      id,
+      startNodeId: startNode.id,
+      endNodeId: endNode.id,
+      segments,
+      totalLength,
+    };
   }
 
   /**
@@ -794,7 +944,7 @@ class NetworkVisualizer {
     // Simplified: just return start and end points for a straight line
     return [
       { x: x1, y: y1 },
-      { x: x2, y: y2 }
+      { x: x2, y: y2 },
     ];
   }
 
@@ -818,9 +968,9 @@ class NetworkVisualizer {
         return {
           position: {
             x: seg.start.x + (seg.end.x - seg.start.x) * t,
-            y: seg.start.y + (seg.end.y - seg.start.y) * t
+            y: seg.start.y + (seg.end.y - seg.start.y) * t,
           },
-          tangent: seg.tangent
+          tangent: seg.tangent,
         };
       }
       accumulatedDist += seg.length;
@@ -852,7 +1002,7 @@ class NetworkVisualizer {
     // We can draw a single centered tube, or multiple parallel ones
     const offsets = [0]; // Just center for now, but we can add [-5, 5] for double lines
 
-    offsets.forEach(offset => {
+    offsets.forEach((offset) => {
       // 1. Layered Glows
       // this.config.tube.glowWidths.forEach((width, idx) => {
       //     this.spineLayer!.lineStyle(width, this.config.tube.glowColor, this.config.tube.glowAlphas[idx]);
@@ -890,8 +1040,10 @@ class NetworkVisualizer {
 
   getPodAtPosition(x: number, y: number, radius: number = 15): any | null {
     for (const pod of this.pods.values()) {
-      const coordinate = pod.data?.coordinate as { x: number, y: number };
-      const dist = Math.sqrt((x - coordinate?.x) ** 2 + (y - coordinate?.y) ** 2);
+      const coordinate = pod.data?.coordinate as { x: number; y: number };
+      const dist = Math.sqrt(
+        (x - coordinate?.x) ** 2 + (y - coordinate?.y) ** 2,
+      );
       if (dist <= radius) return pod;
     }
     return null;
@@ -899,7 +1051,7 @@ class NetworkVisualizer {
 
   showPodLabel(pod: any): void {
     const style = new PIXI.TextStyle({
-      fontFamily: 'monospace',
+      fontFamily: "monospace",
       fontSize: 12,
       fill: 0xffffff,
       stroke: { color: 0x000000, width: 1 },
@@ -908,7 +1060,7 @@ class NetworkVisualizer {
       dropShadowBlur: 2,
     });
 
-    const labelText = pod.id
+    const labelText = pod.id;
     this.hoveredLabel = new PIXI.Text(labelText, style);
 
     // Top-right positioning
@@ -944,22 +1096,20 @@ class NetworkVisualizer {
     }
   }
 
-  drawPodLabel(): void {
-
-  }
+  drawPodLabel(): void {}
 
   drawNodeLabel(): void {
     if (!this.labelLayer) return;
-    this.labelLayer.removeChildren();  // Clear previous labels
+    this.labelLayer.removeChildren(); // Clear previous labels
 
     const style = new PIXI.TextStyle({
-      fontFamily: 'Arial',
+      fontFamily: "Arial",
       fontSize: 12,
-      fill: '#ffffff',
-      stroke: '#000000',
+      fill: "#ffffff",
+      stroke: "#000000",
       strokeThickness: 3,
       dropShadow: {
-        color: '#000000',
+        color: "#000000",
         distance: 4,
         angle: Math.PI / 4,
         alpha: 0.5,
@@ -967,18 +1117,19 @@ class NetworkVisualizer {
     });
 
     for (const node of this.nodes.values()) {
-      const labelText = `S${node.id}`;
+      let labelText = `${node.id}`;
+      labelText = labelText.replace("station_", "S");
+      labelText = labelText.replace("_", "");
       const label = new PIXI.Text(labelText, style);
 
       // Position: top-right of node (offset by radius + padding)
-      label.x = node.x + 15;  // Right of center (12px radius + 3px pad)
-      label.y = node.y - 20;  // Above center (label height/2 ~15px + pad)
+      label.x = node.x + 15; // Right of center (12px radius + 3px pad)
+      label.y = node.y - 20; // Above center (label height/2 ~15px + pad)
 
       // Optional: anchor top-left so x/y is exact top-left corner
       // label.anchor.set(0, 0);
       this.labelLayer.addChild(label);
     }
-
   }
   /**
    * Renders topological nodes.
@@ -1003,4 +1154,3 @@ class NetworkVisualizer {
 }
 
 export { NetworkVisualizer, PodLocation, PodPositionUpdate };
-

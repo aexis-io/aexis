@@ -376,6 +376,84 @@ class Station(EventProcessor):
             "connected_stations": self.connected_stations,
         }
 
+    # ========================================================================
+    # Query & Claim APIs (for pod live queue access)
+    # ========================================================================
+
+    def get_pending_passengers(self, destination: str = None) -> list[dict]:
+        """Return passengers still waiting at this station (not claimed by any pod).
+        
+        Args:
+            destination: Optional filter by destination station
+            
+        Returns:
+            List of passenger dicts that are unclaimed
+        """
+        pending = [p for p in self.passenger_queue if not p.get("claimed_by")]
+        if destination:
+            pending = [p for p in pending if p.get("destination") == destination]
+        return pending
+
+    def get_pending_cargo(self, destination: str = None) -> list[dict]:
+        """Return cargo still waiting at this station (not claimed by any pod).
+        
+        Args:
+            destination: Optional filter by destination station
+            
+        Returns:
+            List of cargo dicts that are unclaimed
+        """
+        pending = [c for c in self.cargo_queue if not c.get("claimed_by")]
+        if destination:
+            pending = [c for c in pending if c.get("destination") == destination]
+        return pending
+
+    def claim_passenger(self, passenger_id: str, pod_id: str) -> bool:
+        """Atomically claim a passenger for a pod.
+        
+        This prevents multiple pods from picking up the same passenger.
+        
+        Args:
+            passenger_id: ID of the passenger to claim
+            pod_id: ID of the pod claiming the passenger
+            
+        Returns:
+            True if claim succeeded, False if already claimed or not found
+        """
+        for p in self.passenger_queue:
+            if p.get("passenger_id") == passenger_id:
+                if p.get("claimed_by"):
+                    logger.debug(f"Station {self.station_id}: Passenger {passenger_id} already claimed by {p['claimed_by']}")
+                    return False
+                p["claimed_by"] = pod_id
+                logger.info(f"Station {self.station_id}: Passenger {passenger_id} claimed by {pod_id}")
+                return True
+        logger.debug(f"Station {self.station_id}: Passenger {passenger_id} not found in queue")
+        return False
+
+    def claim_cargo(self, request_id: str, pod_id: str) -> bool:
+        """Atomically claim cargo for a pod.
+        
+        This prevents multiple pods from loading the same cargo.
+        
+        Args:
+            request_id: ID of the cargo request to claim
+            pod_id: ID of the pod claiming the cargo
+            
+        Returns:
+            True if claim succeeded, False if already claimed or not found
+        """
+        for c in self.cargo_queue:
+            if c.get("request_id") == request_id:
+                if c.get("claimed_by"):
+                    logger.debug(f"Station {self.station_id}: Cargo {request_id} already claimed by {c['claimed_by']}")
+                    return False
+                c["claimed_by"] = pod_id
+                logger.info(f"Station {self.station_id}: Cargo {request_id} claimed by {pod_id}")
+                return True
+        logger.debug(f"Station {self.station_id}: Cargo {request_id} not found in queue")
+        return False
+
 
 class PassengerGenerator:
     """Generates passenger arrivals for simulation"""
