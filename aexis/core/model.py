@@ -234,6 +234,9 @@ class DecisionContext:
     pod_type: str = "unknown"
     pod_constraints: dict[str, Any] = None
     specialization: str = "general"
+    # Current payload for routing context
+    passengers: list[dict[str, Any]] = None
+    cargo: list[dict[str, Any]] = None
 
 
 @dataclass

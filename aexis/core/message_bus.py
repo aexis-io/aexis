@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import Callable
+from typing import Dict, Any, Optional, List, Callable, Union
+from enum import Enum
+from datetime import datetime
 
 import redis.asyncio as redis
 from redis.asyncio import Redis
@@ -19,6 +21,16 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+class AexisJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder for Aexis models (handles datetime, Enum, etc.)"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.strftime('%Y-%m-%d %H:%M:%S')
+        if isinstance(obj, Enum):
+            return obj.value
+        return super().default(obj)
 
 
 class MessageBus:
@@ -47,7 +59,6 @@ class MessageBus:
             )
 
             # Test connection
-
             await self.redis_client.ping()
 
             # Create pubsub for subscription handling
@@ -119,13 +130,11 @@ class MessageBus:
             from dataclasses import asdict
 
             event_dict = asdict(event)
-            # Convert datetime to ISO string
-            # if "timestamp" in event_dict:
-            #     event_dict["timestamp"] = event.timestamp.isoformat()
-            # print(f"Publishing event to {channel}: {event_dict}")
             message = {"channel": channel, "message": event_dict}
 
-            await self.redis_client.publish(channel, json.dumps(message))
+            # Use custom encoder for datetime and Enum
+            json_data = json.dumps(message, cls=AexisJSONEncoder)
+            await self.redis_client.publish(channel, json_data)
             return True
 
         except redis.ConnectionError as e:
@@ -145,6 +154,7 @@ class MessageBus:
             error = create_error(
                 ErrorCode.EVENT_DATA_INVALID,
                 component="MessageBus",
+                error=str(e),
                 context={"event_type": event.event_type, "original_error": str(e)},
             )
             logger.error(error.message)
@@ -178,15 +188,20 @@ class MessageBus:
                     },
                 )
 
+            from dataclasses import asdict
+            command_dict = asdict(command)
+
+            # Convert all datetime objects to ISO strings
+            for key, value in command_dict.items():
+                if isinstance(value, datetime):
+                    command_dict[key] = value.isoformat()
+                elif key == "timestamp" and not isinstance(value, str):
+                    # Ensure timestamp is ISO string if not already
+                    command_dict[key] = value.isoformat()
+
             message = {
                 "channel": channel,
-                "message": {
-                    "command_id": command.command_id,
-                    "command_type": command.command_type,
-                    "target": command.target,
-                    "timestamp": command.timestamp.isoformat(),
-                    "parameters": command.parameters,
-                },
+                "message": command_dict,
             }
 
             await self.redis_client.publish(channel, json.dumps(message))
@@ -206,7 +221,7 @@ class MessageBus:
             logger.error(error.message)
             return False
 
-        except json.JSONEncodeError as e:
+        except (TypeError, ValueError) as e:
             error = create_error(
                 ErrorCode.EVENT_DATA_INVALID,
                 component="MessageBus",
@@ -298,12 +313,21 @@ class MessageBus:
             self.running = True
 
             # Listen for messages
-            async for message in self.pubsub.listen():
-                if not self.running:
-                    break
-
-                if message["type"] == "message":
-                    await self._handle_message(message)
+            while self.running:
+                try:
+                    # Use get_message with timeout to allow checking self.running periodically
+                    message = await self.pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message:
+                        if message["type"] == "message":
+                            await self._handle_message(message)
+                    else:
+                        # Yield control if no message
+                        await asyncio.sleep(0.01)
+                except Exception as e:
+                    # Log error but keep loop running unless fatal
+                    # Transient errors shouldn't crash the listener
+                    logger.warning(f"Error checking for messages: {e}")
+                    await asyncio.sleep(0.1)
 
         except Exception as e:
             error_details = handle_exception(e, "MessageBus")
@@ -430,9 +454,20 @@ class LocalMessageBus(MessageBus):
 
         from dataclasses import asdict
         event_dict = asdict(event)
+        
+        # Ensure timestamp is string
         if "timestamp" in event_dict:
-            ts = event.timestamp
-            event_dict["timestamp"] = ts if isinstance(ts, str) else ts.isoformat()
+            ts = event_dict["timestamp"]
+            if isinstance(ts, datetime):
+                event_dict["timestamp"] = ts.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Also check for other datetime/Enum fields in data
+        if "data" in event_dict and isinstance(event_dict["data"], dict):
+            for k, v in event_dict["data"].items():
+                if isinstance(v, datetime):
+                    event_dict["data"][k] = v.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(v, Enum):
+                    event_dict["data"][k] = v.value
 
         message = {"channel": channel, "message": event_dict}
         
@@ -445,15 +480,26 @@ class LocalMessageBus(MessageBus):
         if not self.running:
             return False
 
+        from dataclasses import asdict
+        cmd_dict = asdict(command)
+        
+        # Ensure timestamp is string
+        if "timestamp" in cmd_dict:
+            ts = cmd_dict["timestamp"]
+            if isinstance(ts, datetime):
+                cmd_dict["timestamp"] = ts.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Handle Enums in parameters
+        if "parameters" in cmd_dict and isinstance(cmd_dict["parameters"], dict):
+            for k, v in cmd_dict["parameters"].items():
+                if isinstance(v, Enum):
+                    cmd_dict["parameters"][k] = v.value
+                elif isinstance(v, datetime):
+                    cmd_dict["parameters"][k] = v.strftime('%Y-%m-%d %H:%M:%S')
+
         message = {
             "channel": channel,
-            "message": {
-                "command_id": command.command_id,
-                "command_type": command.command_type,
-                "target": command.target,
-                "timestamp": command.timestamp.isoformat(),
-                "parameters": command.parameters,
-            },
+            "message": cmd_dict
         }
         
         # Immediate dispatch in local bus

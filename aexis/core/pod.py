@@ -23,7 +23,7 @@ from .model import (
 from .routing import OfflineRouter, RoutingProvider
 
 logging.basicConfig(
-    level=logging.WARN,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -192,9 +192,11 @@ class Pod(EventProcessor):
     async def _handle_route_assignment(self, data: dict):
         """Handle route assignment command"""
         try:
-            parameters = data.get("message", {}).get("parameters", {})
-            # Expecting list of stations or Route dict
-            route_data = parameters.get("route", [])
+            msg_content = data.get("message", {})
+            parameters = msg_content.get("parameters", {})
+            
+            # Look in parameters first, then top level of message (for serialized dataclasses)
+            route_data = parameters.get("route") or msg_content.get("route", [])
 
             # Handle if route is just list of strings (legacy/command input)
             # We need to convert it to a Route object
@@ -232,18 +234,20 @@ class Pod(EventProcessor):
 
             if self.current_route and self.current_route.stations:
                 # Hydrate route into edge segments
-                await self._hydrate_route(self.current_route.stations)
+                if await self._hydrate_route(self.current_route.stations):
+                    self.status = PodStatus.EN_ROUTE
+                    self.movement_start_time = datetime.now(UTC)
+                    self.estimated_arrival = self.movement_start_time + timedelta(
+                        minutes=self.current_route.estimated_duration
+                    )
 
-                self.status = PodStatus.EN_ROUTE
-                self.movement_start_time = datetime.now(UTC)
-                self.estimated_arrival = self.movement_start_time + timedelta(
-                    minutes=self.current_route.estimated_duration
-                )
-
-                await self._publish_status_update()
-                logger.info(
-                    f"Pod {self.pod_id} assigned route: {self.current_route.stations}"
-                )
+                    await self._publish_status_update()
+                    logger.info(
+                        f"Pod {self.pod_id} assigned route: {self.current_route.stations}"
+                    )
+                else:
+                    self.status = PodStatus.IDLE
+                    logger.error(f"Pod {self.pod_id} rejected invalid route")
 
         except ValueError as e:
             logger.error(f"Pod {self.pod_id}: invalid route data - {e}")
@@ -252,17 +256,24 @@ class Pod(EventProcessor):
                 f"Pod {self.pod_id} route assignment error: {e}", exc_info=True
             )
 
-    async def _hydrate_route(self, stations: list[str]):
+    async def _hydrate_route(self, stations: list[str]) -> bool:
         """Convert list of station IDs into a queue of EdgeSegments for navigation"""
         from .network import NetworkContext
         network = NetworkContext.get_instance()
 
-        self.route_queue.clear()
-        self.current_segment = None
-        self.segment_progress = 0.0
+        # If we have a current transit segment, check if it leads to the start of the new route
+        preserved_segment = False
+        if self.current_segment and stations and self.current_segment.end_node == stations[0]:
+            # Keep current_segment, just clear the queue after it
+            self.route_queue.clear()
+            preserved_segment = True
+        else:
+            self.route_queue.clear()
+            self.current_segment = None
+            self.segment_progress = 0.0
 
         if len(stations) < 2:
-            return
+            return True
 
         for i in range(len(stations) - 1):
             start = stations[i]
@@ -273,24 +284,33 @@ class Pod(EventProcessor):
             if edge_id in network.edges:
                 self.route_queue.append(network.edges[edge_id])
             else:
-                # Fallback: Create synthetic edge if missing from map (robustness)
-                logger.warning(
-                    f"Pod {self.pod_id} hydrating synthetic edge {edge_id}")
-                p1 = network.station_positions.get(start, (0, 0))
-                p2 = network.station_positions.get(end, (0, 0))
-                synthetic_edge = EdgeSegment(
-                    segment_id=edge_id,
-                    start_node=start,
-                    end_node=end,
-                    start_coord=Coordinate(p1[0], p1[1]),
-                    end_coord=Coordinate(p2[0], p2[1])
-                )
-                self.route_queue.append(synthetic_edge)
+                # Fallback: Create synthetic edge IF BOTH STATIONS EXIST
+                if start in network.station_positions and end in network.station_positions:
+                    logger.warning(
+                        f"Pod {self.pod_id} hydrating synthetic edge {edge_id}")
+                    p1 = network.station_positions[start]
+                    p2 = network.station_positions[end]
+                    synthetic_edge = EdgeSegment(
+                        segment_id=edge_id,
+                        start_node=start,
+                        end_node=end,
+                        start_coord=Coordinate(p1[0], p1[1]),
+                        end_coord=Coordinate(p2[0], p2[1])
+                    )
+                    self.route_queue.append(synthetic_edge)
+                else:
+                    logger.error(f"Pod {self.pod_id} hydration failed: unknown station in route {edge_id}")
+                    # Clear queue to stop movement
+                    self.route_queue.clear()
+                    self.current_segment = None
+                    return False
 
         # Prime the first segment
         if self.route_queue:
             self.current_segment = self.route_queue.popleft()
             self.segment_progress = 0.0
+        
+        return True
 
     async def _handle_congestion_alert(self, data: dict):
         """Handle congestion alerts"""
@@ -383,11 +403,22 @@ class Pod(EventProcessor):
             # Hydrate route into segments for movement
             await self._hydrate_route(decision.route)
 
-            self.status = PodStatus.EN_ROUTE
-            self.movement_start_time = datetime.now(UTC)
+            # Only start movement if we have a valid route with segments
+            if self.current_segment or self.route_queue:
+                self.status = PodStatus.EN_ROUTE
+                self.movement_start_time = datetime.now(UTC)
+            else:
+                self.status = PodStatus.IDLE
+                logger.info(f"Pod {self.pod_id} remaining IDLE (no route segments)")
 
             # Setup pickup and delivery stations for pods
             await self._setup_pickup_delivery_routes(decision.route)
+
+            # If already at a station, execute pickup/delivery immediately before starting movement
+            if self.location_descriptor.location_type == "station":
+                station_id = self.location_descriptor.node_id
+                await self._execute_pickup(station_id)
+                await self._execute_delivery(station_id)
 
             logger.info(
                 f"Pod {self.pod_id} executing decision: {decision.route}")
@@ -398,6 +429,14 @@ class Pod(EventProcessor):
         This is overridden by subclasses to handle passenger/cargo specific logic.
         """
         # Base implementation does nothing
+        pass
+
+    async def _execute_pickup(self, station_id: str):
+        """Execute pickup at station (overridden by subclasses)"""
+        pass
+
+    async def _execute_delivery(self, station_id: str):
+        """Execute delivery at station (overridden by subclasses)"""
         pass
 
     async def _publish_decision_event(self, decision: Decision):
@@ -521,12 +560,20 @@ class Pod(EventProcessor):
         current_coord = self.current_segment.get_point_at_distance(
             self.segment_progress)
 
-        self.location_descriptor = LocationDescriptor(
-            location_type="edge",
-            edge_id=self.current_segment.segment_id,
-            coordinate=current_coord,
-            distance_on_edge=self.segment_progress
-        )
+        if self.segment_progress == 0.0:
+            # At start of segment = At start node (Station)
+            self.location_descriptor = LocationDescriptor(
+                location_type="station",
+                node_id=self.current_segment.start_node,
+                coordinate=current_coord
+            )
+        else:
+            self.location_descriptor = LocationDescriptor(
+                location_type="edge",
+                edge_id=self.current_segment.segment_id,
+                coordinate=current_coord,
+                distance_on_edge=self.segment_progress
+            )
 
     async def _handle_route_completion(self):
         """Handle arrival at destination"""
@@ -707,10 +754,12 @@ class PassengerPod(Pod):
         event = PodArrival(pod_id=self.pod_id, station_id=station_id)
         logger.warning(f"Pod {self.pod_id} arrived at station {station_id}, checking for passengers")
         await self.message_bus.publish_event(MessageBus.get_event_channel(event.event_type), event)
-        await self._execute_passenger_pickup(station_id)
-        await self._execute_passenger_delivery(station_id)
+        await self._execute_pickup(station_id)
+        await self._execute_delivery(station_id)
+        # Trigger routing decision for next leg (whether pickup happened or not)
+        await self.make_decision()
 
-    async def _execute_passenger_pickup(self, station_id: str):
+    async def _execute_pickup(self, station_id: str):
         """Execute passenger pickup at station using live queue query and claim system"""
         remaining_capacity = self.capacity - len(self.passengers)
         if remaining_capacity <= 0:
@@ -736,8 +785,20 @@ class PassengerPod(Pod):
             pickups = []
             for p in pending[:remaining_capacity]:
                 passenger_id = p.get("passenger_id")
+                
+                # ADVERSARIAL FIX: check if passenger already somehow on board (Zombie check)
+                if any(existing.get("passenger_id") == passenger_id for existing in self.passengers):
+                    logger.warning(
+                        f"Pod {self.pod_id}: Passenger {passenger_id} already on board! Skipping duplicate pickup.")
+                    continue
+
                 if station.claim_passenger(passenger_id, self.pod_id):
                     pickups.append(p)
+                    # Remove from available requests locally to prevent re-routing to it
+                    self._available_requests = [
+                        r for r in self._available_requests
+                        if r.get("passenger_id") != passenger_id
+                    ]
 
         if not pickups:
             logger.debug(
@@ -767,13 +828,16 @@ class PassengerPod(Pod):
                 station_id=station_id,
                 pickup_time=passenger["pickup_time"]
             )
+            logger.debug(f"Pod {self.pod_id} publishing PassengerPickedUp for {passenger['passenger_id']} at {station_id}")
             await self.publish_event(event)
 
         self.status = PodStatus.EN_ROUTE
-        logger.info(
+        logger.warning(
             f"Pod {self.pod_id} loaded {len(pickups)} passengers at {station_id}")
 
-    async def _execute_passenger_delivery(self, station_id: str):
+
+
+    async def _execute_delivery(self, station_id: str):
         """Execute passenger delivery at station"""
         delivered = [p for p in self.passengers if p.get(
             'destination') == station_id]
@@ -830,6 +894,9 @@ class PassengerPod(Pod):
         # Get current location - either station or nearest station if on edge
         if self.location_descriptor.location_type == "station":
             current_location = self.location_descriptor.node_id
+        elif self.current_segment:
+            # In transit: logical location for next route is the end of current segment
+            current_location = self.current_segment.end_node
         else:
             from .network import NetworkContext
             network = NetworkContext.get_instance()
@@ -853,9 +920,6 @@ class PassengerPod(Pod):
         except Exception as e:
             logger.debug(f"Error gathering requests for {self.pod_id}: {e}")
 
-        # DEBUG
-        # print(
-        #     f"DEBUG Pod: {self.pod_id} building context, id={id(self)}, _available_requests count={len(self._available_requests)}")
         return DecisionContext(
             pod_id=self.pod_id,
             current_location=current_location,
@@ -868,7 +932,9 @@ class PassengerPod(Pod):
             # Enhanced context with pod type information
             pod_type=self.pod_type.value,
             pod_constraints=constraints,
-            specialization="passenger_transport"
+            specialization="passenger_transport",
+            passengers=list(self.passengers),
+            cargo=[]
         )
 
     def _get_capacity_status(self):
@@ -908,10 +974,12 @@ class CargoPod(Pod):
         self.location_descriptor = LocationDescriptor(
             location_type="station", node_id=station_id, coordinate=self.location_descriptor.coordinate,
         )
-        await self._execute_cargo_pickup(station_id)
-        await self._execute_cargo_delivery(station_id)
+        await self._execute_pickup(station_id)
+        await self._execute_delivery(station_id)
+        # Trigger routing decision for next leg
+        await self.make_decision()
 
-    async def _execute_cargo_pickup(self, station_id: str):
+    async def _execute_pickup(self, station_id: str):
         """Execute cargo pickup at station using live queue query and claim system"""
         remaining_capacity = self.weight_capacity - self.current_weight
         if remaining_capacity <= 0:
@@ -977,6 +1045,12 @@ class CargoPod(Pod):
                 load_time=cargo_item["pickup_time"],
             )
             await self.publish_event(event)
+            
+            # Remove from available requests locally
+            self._available_requests = [
+                r for r in self._available_requests
+                if r.get("request_id") != request_id
+            ]
 
         if loaded_count == 0:
             self.status = PodStatus.IDLE
@@ -994,7 +1068,7 @@ class CargoPod(Pod):
             f"Pod {self.pod_id} loaded {loaded_count} cargo items ({loaded_weight:.1f}kg) at {station_id}"
         )
 
-    async def _execute_cargo_delivery(self, station_id: str):
+    async def _execute_delivery(self, station_id: str):
         """Execute cargo delivery at station"""
         delivered = [c for c in self.cargo if c.get(
             'destination') == station_id]
@@ -1047,6 +1121,9 @@ class CargoPod(Pod):
         # Get current location - either station or nearest station if on edge
         if self.location_descriptor.location_type == "station":
             current_location = self.location_descriptor.node_id
+        elif self.current_segment:
+            # In transit: logical location for next route is the end of current segment
+            current_location = self.current_segment.end_node
         else:
             from .network import NetworkContext
             network = NetworkContext.get_instance()
@@ -1062,10 +1139,12 @@ class CargoPod(Pod):
             available_requests=self._available_requests,
             network_state={},
             system_metrics={},
-            # Enhanced context with pod type information
+            # Enhanced context
             pod_type=self.pod_type.value,
             pod_constraints=constraints,
-            specialization="cargo_transport"
+            specialization="cargo_transport",
+            passengers=[],
+            cargo=list(self.cargo)
         )
 
     def _get_capacity_status(self):

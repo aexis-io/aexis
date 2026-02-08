@@ -88,6 +88,7 @@ class Station(EventProcessor):
         try:
             message = data.get("message", {})
             event_type = message.get("event_type", "")
+            logger.debug(f"Station {self.station_id} received event {event_type}")
             # Robustly get event data - might be in 'data' field or top-level entries
             event_data = message.get("data", {})
             if not event_data:
@@ -213,9 +214,11 @@ class Station(EventProcessor):
         station_id = event_data.get("station_id")
 
         if station_id != self.station_id:
+            logger.debug(f"Station {self.station_id} ignoring pickup for station {station_id}")
             return
 
         # Remove from queue
+        logger.debug(f"Station {self.station_id} removing passenger {passenger_id} from queue")
         self.passenger_queue = [
             p for p in self.passenger_queue if p["passenger_id"] != passenger_id
         ]
@@ -224,7 +227,7 @@ class Station(EventProcessor):
         self._update_congestion_level()
         self._update_wait_time_metrics()
 
-        logger.info(
+        logger.warning(
             f"Station {self.station_id}: Passenger {passenger_id} picked up")
 
     async def _handle_cargo_loading(self, event_data: dict):

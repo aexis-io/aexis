@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from .ai_provider import AIProviderFactory
 from .errors import handle_exception
-from .message_bus import MessageBus
+from .message_bus import LocalMessageBus, MessageBus
 from .model import SystemSnapshot
 from .network import (
     NetworkContext,
@@ -162,6 +162,7 @@ class SystemContext:
             logger.warning(f"Loading network data from {network_path}")
             network_data = load_network_data(network_path)
             self._network_context = NetworkContext(network_data)
+            NetworkContext.set_instance(self._network_context)
 
             logger.warning(
                 f"SystemContext initialized with config: {config_path}")
@@ -225,10 +226,14 @@ class AexisSystem:
         if message_bus:
             self.message_bus = message_bus
         else:
-            self.message_bus = MessageBus(
-                redis_url=self.config.get('redis.url', "redis://localhost:6379"),
-                password=self.config.get('redis.password'),
-            )
+            redis_url = self.config.get('redis.url', "redis://localhost:6379")
+            if redis_url == "local://":
+                self.message_bus = LocalMessageBus()
+            else:
+                self.message_bus = MessageBus(
+                    redis_url=redis_url,
+                    password=self.config.get('redis.password'),
+                )
         self.ai_provider = None
         self.pods: Mapping[str, Pod] = {}
         self.stations = {}
@@ -279,6 +284,9 @@ class AexisSystem:
 
             # Setup generators
             await self._setup_generators()
+
+            # Setup system subscriptions
+            await self._setup_subscriptions()
 
             # Start system monitoring
             self.start_time = datetime.now()
@@ -335,7 +343,7 @@ class AexisSystem:
 
             # React to arrivals by triggering idle pods
             if event_type in ["PassengerArrival", "CargoRequest"]:
-                station_id = message.get("station_id") or message.get("origin")
+                station_id = event_data.get("station_id") or event_data.get("origin")
                 logger.warning(f"Station {station_id} processing event")
                 
                 # First, prioritize pods already at the station
@@ -344,7 +352,7 @@ class AexisSystem:
                         st = pod.status.value 
                         at_station = self._pod_is_at_station(pod, station_id)
                         logger.warning(f"Pod {pod.pod_id} is {st} and {at_station or 'not'} at station {station_id}")
-                        if pod.status.value == "idle" and self._pod_is_at_station(pod, station_id):
+                        if (pod.status == PodStatus.IDLE or pod.status.value == "idle") and self._pod_is_at_station(pod, station_id):
                             logger.warning(f"Pod {pod.pod_id} is idle => {pod.status != PodStatus.IDLE}")
                             logger.warning(f"Prioritizing docked pod {pod.pod_id} at {station_id} for new {event_type}")
                             await self._populate_pod_requests(pod)
@@ -671,7 +679,7 @@ class AexisSystem:
             pod.segment_progress = distance_on_edge
 
             # Mark as en route so movement simulation will update it
-            pod.status = PodStatus.IDLE
+            pod.status = PodStatus.EN_ROUTE
 
             # Set location descriptor with precise position
             pod.location_descriptor = LocationDescriptor(
@@ -858,6 +866,11 @@ class AexisSystem:
 
         except Exception as e:
             logger.debug(f"Error populating requests for {pod.pod_id}: {e}")
+
+    async def _simulate_pod_movement_once(self, dt: float):
+        """Perform a single simulation step (used for testing)"""
+        for pod in self.pods.values():
+            await pod.update(dt)
 
     async def _simulate_pod_movement(self):
         """Simulate pod movement with continuous path integration

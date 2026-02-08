@@ -18,7 +18,7 @@ flowchart TB
         SC[STATION_COMMANDS]
         SYS[SYSTEM_COMMANDS]
     end
-    
+
     subgraph Components
         AS[AexisSystem]
         ST[Station]
@@ -26,7 +26,7 @@ flowchart TB
         PG[PassengerGenerator]
         CG[CargoGenerator]
     end
-    
+
     PG -->|publish| PE
     CG -->|publish| CE
     AS -->|subscribe| PE
@@ -44,26 +44,26 @@ flowchart TB
 
 ## 2. Channel Definitions
 
-| Channel Name | Purpose | Key Event Types |
-|-------------|---------|-----------------|
-| `PASSENGER_EVENTS` | Passenger lifecycle | PassengerArrival, PassengerPickedUp, PassengerDelivered |
-| `CARGO_EVENTS` | Cargo lifecycle | CargoRequest, CargoLoaded, CargoDelivered |
-| `POD_EVENTS` | Pod state changes | PodStatusUpdate, PodDecision, PodArrival, PodDeparture |
-| `SYSTEM_EVENTS` | System-wide broadcast | SystemSnapshot, emergency alerts |
-| `CONGESTION_EVENTS` | Traffic management | CongestionAlert |
-| `POD_COMMANDS` | Commands to pods | AssignRoute |
-| `STATION_COMMANDS` | Commands to stations | UpdateCapacity |
-| `SYSTEM_COMMANDS` | System commands | Shutdown, config reload |
+| Channel Name        | Purpose               | Key Event Types                                         |
+| ------------------- | --------------------- | ------------------------------------------------------- |
+| `PASSENGER_EVENTS`  | Passenger lifecycle   | PassengerArrival, PassengerPickedUp, PassengerDelivered |
+| `CARGO_EVENTS`      | Cargo lifecycle       | CargoRequest, CargoLoaded, CargoDelivered               |
+| `POD_EVENTS`        | Pod state changes     | PodStatusUpdate, PodDecision, PodArrival, PodDeparture  |
+| `SYSTEM_EVENTS`     | System-wide broadcast | SystemSnapshot, emergency alerts                        |
+| `CONGESTION_EVENTS` | Traffic management    | CongestionAlert                                         |
+| `POD_COMMANDS`      | Commands to pods      | AssignRoute                                             |
+| `STATION_COMMANDS`  | Commands to stations  | UpdateCapacity                                          |
+| `SYSTEM_COMMANDS`   | System commands       | Shutdown, config reload                                 |
 
 ---
 
 ## 3. Component Subscription Matrix
 
-| Component | PASSENGER_EVENTS | CARGO_EVENTS | POD_EVENTS | SYSTEM_EVENTS | POD_COMMANDS | SYSTEM_COMMANDS |
-|-----------|------------------|--------------|------------|---------------|--------------|-----------------|
-| **AexisSystem** | ✅ `_handle_event` | ✅ `_handle_event` | ❌ | ❌ | ❌ | ❌ |
-| **Station** | ✅ `_handle_passenger_event` | ✅ `_handle_cargo_event` | ✅ `_handle_pod_event` | ❌ | ❌ | ✅ `_handle_system_command` |
-| **Pod** | ❌ | ❌ | ❌ | ✅ `_handle_system_event` | ✅ `_handle_command` | ❌ |
+| Component       | PASSENGER_EVENTS             | CARGO_EVENTS             | POD_EVENTS             | SYSTEM_EVENTS             | POD_COMMANDS         | SYSTEM_COMMANDS             |
+| --------------- | ---------------------------- | ------------------------ | ---------------------- | ------------------------- | -------------------- | --------------------------- |
+| **AexisSystem** | ✅ `_handle_event`           | ✅ `_handle_event`       | ❌                     | ❌                        | ❌                   | ❌                          |
+| **Station**     | ✅ `_handle_passenger_event` | ✅ `_handle_cargo_event` | ✅ `_handle_pod_event` | ❌                        | ❌                   | ✅ `_handle_system_command` |
+| **Pod**         | ❌                           | ❌                       | ❌                     | ✅ `_handle_system_event` | ✅ `_handle_command` | ❌                          |
 
 ---
 
@@ -88,9 +88,9 @@ sequenceDiagram
     SYS->>POD: make_decision()
     POD->>POD: Calculate route to origin station
     POD->>MB: publish(PodStatusUpdate: EN_ROUTE)
-    
+
     Note over POD: Pod travels to station
-    
+
     POD->>POD: _handle_route_completion()
     POD->>POD: _handle_station_arrival()
     POD->>MB: publish(PodArrival)
@@ -98,9 +98,9 @@ sequenceDiagram
     POD->>MB: publish(PassengerPickedUp)
     MB-->>ST: PassengerPickedUp
     ST->>ST: Remove from passenger_queue
-    
+
     Note over POD: Pod travels to destination
-    
+
     POD->>POD: _execute_passenger_delivery()
     POD->>MB: publish(PassengerDelivered)
 ```
@@ -109,7 +109,7 @@ sequenceDiagram
 
 #### Issue 1: Pickup Logic Depends on Stale `_available_requests`
 
-**Location:** [PassengerPod._execute_passenger_pickup](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L686-L736)
+**Location:** [PassengerPod.\_execute_passenger_pickup](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L686-L736)
 
 **Problem:** The pickup method filters `_available_requests` for passengers at the current station. However, `_available_requests` is populated **before** the pod starts moving, not when it arrives. If new passengers arrive while the pod is en-route, they are **not** included.
 
@@ -124,7 +124,7 @@ pickups = [r for r in self._available_requests if r.get("origin") == station_id 
 
 #### Issue 2: Synchronous Event Publish in Station Arrival
 
-**Location:** [PassengerPod._handle_station_arrival](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L677-L684)
+**Location:** [PassengerPod.\_handle_station_arrival](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L677-L684)
 
 **Problem:** Line 683 uses `publish_event` without `await`:
 
@@ -151,6 +151,7 @@ await self._setup_subscriptions()  # System subscribes AFTER components
 ```
 
 **In test file (lines 73-83):**
+
 ```python
 for station in aexis_system.stations.values():
     await station.start()
@@ -172,9 +173,10 @@ This is actually correct, but the comment in the test is misleading.
 
 #### Issue 5: Pod Does Not Re-Query on Arrival
 
-**Location:** [PassengerPod._execute_passenger_pickup](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L686-L736)
+**Location:** [PassengerPod.\_execute_passenger_pickup](file:///home/godelhaze/dev/megalith/aexis/aexis/core/pod.py#L686-L736)
 
 **Problem:** Pod picks up from `_available_requests` which was populated at decision time. It does not:
+
 1. Verify the passenger is still waiting
 2. Query the Station for current queue state
 3. Handle the case where passenger was picked up by another pod
@@ -184,6 +186,7 @@ This is actually correct, but the comment in the test is misleading.
 ## 5. Event Flow: Cargo Lifecycle
 
 Similar to passenger flow, with these event types:
+
 - `CargoRequest` → Station adds to `cargo_queue`
 - `CargoLoaded` → Station removes from `cargo_queue`
 - `CargoDelivered` → Delivery confirmation
@@ -213,6 +216,7 @@ flowchart LR
 ### 6.2 Decision Context Building
 
 Each pod type builds context differently:
+
 - **PassengerPod:** Includes `current_passengers`, `capacity`, `passenger_requests`
 - **CargoPod:** Includes `current_cargo`, `weight_limit`, `cargo_requests`
 
@@ -228,7 +232,7 @@ while dist_to_travel > 0:
     if not current_segment:
         await _handle_route_completion()
         return
-    
+
     remaining = segment_length - segment_progress
     if dist_to_travel >= remaining:
         # Complete segment, advance to next
@@ -241,6 +245,7 @@ while dist_to_travel > 0:
 ### 7.2 Route Completion
 
 When `segment_queue` is exhausted:
+
 1. Snap to final station coordinate
 2. Call `_handle_station_arrival(final_station)`
 3. Set status to `IDLE`
@@ -248,76 +253,84 @@ When `segment_queue` is exhausted:
 
 ---
 
-## 8. Missing Behaviors & Gaps
+## 8. Implementation Status
 
-| Gap | Description | Impact | Priority |
-|-----|-------------|--------|----------|
-| **No passenger claim mechanism** | Multiple pods can route to same passenger | Wasted routes, inefficiency | High |
-| **Stale request list** | `_available_requests` not refreshed on arrival | Missed pickups, empty trips | High |
-| **Sync publish bug** | Missing `await` on PodArrival publish | Race condition in event handling | Medium |
-| **No station query API** | Pod cannot ask Station for current queue | Forces reliance on pre-populated data | Medium |
-| **No pod-to-pod awareness** | Pods don't know other pods' routes | Duplicate route decisions | Low |
-
----
-
-## 9. Recommended Fixes
-
-### 9.1 Add Station Query for Live Queue
-
-```python
-# In Station
-def get_pending_passengers(self, for_destination: str = None) -> list[dict]:
-    """Return passengers still waiting for pickup"""
-    if for_destination:
-        return [p for p in self.passenger_queue if p["destination"] == for_destination]
-    return list(self.passenger_queue)
-```
-
-### 9.2 Fix Missing Await
-
-```python
-# In PassengerPod._handle_station_arrival
-await self.message_bus.publish_event(...)  # Add await
-```
-
-### 9.3 Add Passenger Claim System
-
-```python
-# In Station
-async def claim_passenger(self, passenger_id: str, pod_id: str) -> bool:
-    """Atomically claim a passenger for a pod. Returns False if already claimed."""
-    for p in self.passenger_queue:
-        if p["passenger_id"] == passenger_id:
-            if p.get("claimed_by"):
-                return False
-            p["claimed_by"] = pod_id
-            return True
-    return False
-```
-
-### 9.4 On-Arrival Queue Refresh
-
-```python
-# In PassengerPod._execute_passenger_pickup
-async def _execute_passenger_pickup(self, station_id: str):
-    # Query station for current queue instead of using stale _available_requests
-    station = ... # Get station reference
-    pending = station.get_pending_passengers()
-    pickups = [p for p in pending if self._can_pickup(p)]
-```
+| Item                      | Status             | Notes                                              |
+| ------------------------- | ------------------ | -------------------------------------------------- |
+| Passenger claim mechanism | ✅ Implemented     | `Station.claim_passenger()` prevents double-pickup |
+| Live queue query          | ✅ Implemented     | `Station.get_pending_passengers()` used on arrival |
+| Await on publish          | ✅ Fixed           | `_handle_station_arrival` correctly awaits         |
+| Station query API         | ✅ Implemented     | `get_pending_passengers()`, `get_pending_cargo()`  |
+| Pod-to-pod awareness      | ❌ Not implemented | Pods operate independently                         |
 
 ---
 
-## 10. Test Coverage Analysis
+## 9. Edge Cases & Timing Behaviors
 
-| Test File | Covers |
-|-----------|--------|
+### 9.1 Loading/Unloading Timing
+
+```mermaid
+sequenceDiagram
+    participant POD as Pod
+    participant ST as Station
+
+    POD->>POD: Arrive at station
+    POD->>POD: status = IDLE
+    POD->>ST: get_pending_passengers()
+    POD->>ST: claim_passenger() for each
+    POD->>POD: status = LOADING
+    Note over POD: Sleep 5s × passenger_count
+    POD->>POD: status = EN_ROUTE
+    POD->>POD: Calculate next route (AFTER loading)
+```
+
+**Key behaviors:**
+
+- Route calculation happens **after** loading to build correct context
+- Loading time: `5 seconds × payload_count`
+- FIFO pickup order (no priority handling)
+
+### 9.2 Intermediate Station Behavior
+
+Pods should pick up/drop off at **every station along their route**:
+
+1. Arrive at station → Drop off payloads destined for this station
+2. Check for pending passengers → Claim and load if capacity available
+3. Continue to next station in route
+
+### 9.3 Multi-Pod Conflict Resolution
+
+**Scenario:** Two pods route to same passenger
+
+| Event                         | Pod A               | Pod B                         |
+| ----------------------------- | ------------------- | ----------------------------- |
+| Both receive PassengerArrival | Routes to station   | Routes to station             |
+| Pod A arrives first           | Claims passenger ✅ | Still en-route                |
+| Pod B arrives                 | -                   | Claim fails → IDLE            |
+| Pod B behavior                | -                   | Waits at station indefinitely |
+
+**Recovery:** Pod B remains IDLE until a `CongestionAlert` from another station triggers re-routing.
+
+### 9.4 Failed Pickup Behavior
+
+When pod arrives at station with no claimable payloads:
+
+1. `_execute_passenger_pickup()` returns early
+2. Pod status → `IDLE`
+3. Pod **does not** make proactive re-decision
+4. Waits for `CongestionAlert` event to trigger movement
+
+---
+
+## 10. Test Coverage
+
+| Test File                        | Covers                                  |
+| -------------------------------- | --------------------------------------- |
 | `test_pod_routing_integrated.py` | End-to-end routing with LocalMessageBus |
-| `test_comprehensive.py` | Unit tests for core components |
-| `test_critical_features.py` | Feature-specific integration |
-| `test_system_movement.py` | Pod physics and movement |
-
-**Gap:** No test for passenger claim conflicts or stale request scenarios.
+| `test_integration_flow.py`       | Passenger lifecycle infrastructure      |
+| `test_system_movement.py`        | Pod physics and movement                |
+| `test_pod_movement.py`           | Movement overflow and events            |
+| `test_behavior_edge_cases.py`    | Claim conflicts, timing (TODO)          |
 
 ---
 
@@ -325,13 +338,13 @@ async def _execute_passenger_pickup(self, station_id: str):
 
 See [model.py](file:///home/godelhaze/dev/megalith/aexis/aexis/core/model.py) for complete dataclass definitions.
 
-| Event | Key Fields |
-|-------|-----------|
-| `PassengerArrival` | passenger_id, station_id, destination, priority |
-| `PassengerPickedUp` | passenger_id, pod_id, station_id, pickup_time |
+| Event                | Key Fields                                                          |
+| -------------------- | ------------------------------------------------------------------- |
+| `PassengerArrival`   | passenger_id, station_id, destination, priority                     |
+| `PassengerPickedUp`  | passenger_id, pod_id, station_id, pickup_time                       |
 | `PassengerDelivered` | passenger_id, pod_id, station_id, delivery_time, satisfaction_score |
-| `CargoRequest` | request_id, origin, destination, weight, deadline |
-| `CargoLoaded` | request_id, pod_id, station_id |
-| `CargoDelivered` | request_id, pod_id, station_id, on_time |
-| `PodStatusUpdate` | pod_id, status, location, capacity_used |
-| `CongestionAlert` | station_id, congestion_level, queue_length |
+| `CargoRequest`       | request_id, origin, destination, weight, deadline                   |
+| `CargoLoaded`        | request_id, pod_id, station_id                                      |
+| `CargoDelivered`     | request_id, pod_id, station_id, on_time                             |
+| `PodStatusUpdate`    | pod_id, status, location, capacity_used                             |
+| `CongestionAlert`    | station_id, congestion_level, queue_length                          |
