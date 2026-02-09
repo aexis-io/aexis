@@ -363,3 +363,16 @@ http-client.private.env.json
 
 # Github Copilot persisted session migrations, see: https://github.com/microsoft/copilot-intellij-feedback/issues/712#issuecomment-3322062215
 .idea/**/copilot.data.migration.*.xml
+
+stress_test.py
+reproduce_issue.py
+video*
+update_network_weights.py
+.agent/
+.antigravity
+.github/
+.idea
+docs
+.vscode
+
+aexis.json

@@ -907,11 +907,6 @@ class AexisSystem:
                 logger.debug(
                     f"Pod movement simulation error: {e}", exc_info=True)
                 await asyncio.sleep(target_interval)
-            
-            # Instrumentation: Check for slow ticks
-            duration = loop.time() - now
-            if duration > 0.15: # 150ms logging threshold
-                 logger.warning(f"Slow system tick: {duration*1000:.1f}ms (target 100ms)")
 
     async def _update_metrics(self):
         """Update system metrics"""

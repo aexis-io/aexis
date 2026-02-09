@@ -28,24 +28,13 @@ docker compose up -d
 # Install dependencies and run
 cd aexis
 uv sync
-uv run python main.py
+./run_services.sh
 ```
 
 Access the dashboard at http://localhost:8000
 
-## Documentation
-
-- **[Architecture](docs/architecture.md)** - System design and component overview
-- **[Setup Guide](docs/setup.md)** - Installation and configuration instructions  
-- **[API Reference](docs/api.md)** - Complete API documentation and event types
-- **[Graph Visualization](docs/graph-visualization.md)** - Real-time network visualization design
-
-## Gemini 3 Hackathon
-
-Built for the [Gemini 3 Hackathon](https://gemini3.devpost.com/) - demonstrating next-generation AI applications with advanced reasoning capabilities.
-
-### Gemini 3 Features Used
-- **Thought Signatures**: Persistent AI reasoning across events
-- **Multi-Level Thinking**: Complex decision hierarchies
-- **Low Latency**: Real-time response for transportation logistics
-- **Advanced Reasoning**: Route optimization and system coordination
+To simulate passenger and cargo arrival
+run the injector script
+```bash
+python payload_injectory.py
+```
